@@ -127,6 +127,9 @@ def put_skill(url: str, token: str, name: str, body: dict[str, Any]) -> tuple[in
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            # Same UA as hydra_cli/api.py: without one, Cloudflare answers 403 error 1010
+            # on the public URL, so the publisher only worked from the Pi via loopback.
+            "User-Agent": "hydra-cli/0.1",
         },
         method="PUT",
     )
