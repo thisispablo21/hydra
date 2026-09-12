@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from server.db import get_db
 from server.models import HookEvent
@@ -216,6 +216,37 @@ class InvalidRemoteControlUrl(Exception):
 
 
 _ARCHIVABLE_STATES = ("ended", "idle")
+
+# A process that dies without sending SessionEnd - closed terminal, sleep, Ctrl-C during
+# a subagent - leaves its last status behind forever, and an active/waiting_input session
+# can never be archived. Sweep those to ended; a resume fires SessionStart and revives it.
+STALE_AFTER_DAYS = 7
+
+
+async def sweep_stale_sessions() -> list[str]:
+    db = await get_db()
+    now = _now()
+    cutoff = (datetime.fromisoformat(now) - timedelta(days=STALE_AFTER_DAYS)).isoformat()
+    rows = list(await db.execute_fetchall(
+        "SELECT session_id FROM sessions WHERE status != 'ended' AND last_event_at < ?",
+        (cutoff,),
+    ))
+    swept = [row[0] for row in rows]
+    if not swept:
+        return swept
+    await db.executemany(
+        "UPDATE sessions SET status='ended', end_reason='stale', remote_control_url=NULL"
+        " WHERE session_id=?",
+        [(sid,) for sid in swept],
+    )
+    await db.commit()
+    for sid in swept:
+        await _broadcast({
+            "session_id": sid,
+            "event_name": "session_stale",
+            "received_at": now,
+        })
+    return swept
 
 
 async def archive_session(session_id: str) -> None:

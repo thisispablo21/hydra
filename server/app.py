@@ -10,6 +10,7 @@ from server import config
 from server.db import close_db, get_db
 from server.routers import config as config_router
 from server.routers import hooks, memory, projects, sessions, skills, usage
+from server.services.session_manager import sweep_stale_sessions
 
 # Per-path request body caps. Pi memory is the limiting resource; `tool_input`
 # is an unbounded dict otherwise.
@@ -103,6 +104,7 @@ async def lifespan(app: FastAPI):
             "HYDRA_AUTH_TOKEN is required. Set HYDRA_ALLOW_NO_AUTH=1 for local dev."
         )
     await get_db()
+    await sweep_stale_sessions()
     yield
     await close_db()
 

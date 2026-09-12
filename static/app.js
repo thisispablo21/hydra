@@ -87,6 +87,14 @@ function handleEvent(data) {
         }
         return;
     }
+    if (data.event_name === "session_stale") {
+        if (sessions[data.session_id]) {
+            sessions[data.session_id].status = "ended";
+            sessions[data.session_id].end_reason = "stale";
+            renderSessions();
+        }
+        return;
+    }
 
     // Update session state optimistically
     const sid = data.session_id;

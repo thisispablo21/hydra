@@ -17,6 +17,7 @@ from server.services.session_manager import (
     get_session_events,
     set_remote_control_url,
     subscribe,
+    sweep_stale_sessions,
     unarchive_session,
     unsubscribe,
 )
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 
 @router.get("/sessions", dependencies=[Depends(require_auth)])
 async def list_sessions(archived: bool = False):
+    await sweep_stale_sessions()
     return await get_all_sessions(archived=archived)
 
 

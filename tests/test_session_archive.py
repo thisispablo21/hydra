@@ -1,7 +1,11 @@
 """Tests for session archive/unarchive endpoints."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from httpx import AsyncClient
+
+from server.db import get_db
 
 pytestmark = pytest.mark.asyncio
 
@@ -191,3 +195,43 @@ async def test_stop_does_not_unarchive(client: AsyncClient):
 
     res = await client.get("/api/sessions?archived=true")
     assert len(res.json()) == 1
+
+
+# --- Stale sweep ---
+
+
+async def _backdate(sid: str, days: int) -> None:
+    db = await get_db()
+    past = (datetime.now(UTC) - timedelta(days=days)).replace(microsecond=0).isoformat()
+    await db.execute("UPDATE sessions SET last_event_at=? WHERE session_id=?", (past, sid))
+    await db.commit()
+
+
+async def test_stale_active_session_is_ended_on_list(client: AsyncClient):
+    await post_event(client, hook_body("s1", "SessionStart", cwd="/tmp"))
+    await _backdate("s1", 8)
+
+    res = await client.get("/api/sessions")
+    (s,) = res.json()
+    assert (s["status"], s["end_reason"]) == ("ended", "stale")
+
+    res = await client.post("/api/sessions/s1/archive")
+    assert res.status_code == 204
+
+
+async def test_recent_active_session_is_not_swept(client: AsyncClient):
+    await post_event(client, hook_body("s1", "SessionStart", cwd="/tmp"))
+    await _backdate("s1", 6)
+
+    res = await client.get("/api/sessions")
+    assert res.json()[0]["status"] == "active"
+
+
+async def test_resume_revives_swept_session(client: AsyncClient):
+    await post_event(client, hook_body("s1", "SessionStart", cwd="/tmp"))
+    await _backdate("s1", 8)
+    await client.get("/api/sessions")
+
+    await post_event(client, hook_body("s1", "SessionStart", cwd="/tmp"))
+    res = await client.get("/api/sessions")
+    assert res.json()[0]["status"] == "active"
