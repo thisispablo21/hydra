@@ -323,7 +323,9 @@ def test_apply_end_to_end_with_real_template(tmp_path: Path) -> None:
     assert out["effortLevel"] == "xhigh"
     assert out["permissions"] == {"defaultMode": "auto"}
     assert "defaultMode" not in out  # only valid nested under permissions
-    assert "env" not in out  # env-var promotion removed
+    # The effort-level env promotion is gone for good (it could not be overridden
+    # in-session); other env keys the template ships, like HYDRA_FLOW_HINT, are fine.
+    assert "CLAUDE_CODE_EFFORT_LEVEL" not in out.get("env", {})
     assert out["attribution"] == {"pr": "", "commit": ""}
     # statusLine has the shape Claude Code requires (rejects bare `{}`).
     assert out["statusLine"]["type"] == "command"
