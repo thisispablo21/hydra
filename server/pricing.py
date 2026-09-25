@@ -38,6 +38,7 @@ RATES: dict[str, Rate] = {
     "claude-mythos-5-1": Rate(10.0, 50.0, 0.025),
     "claude-fable-5": Rate(10.0, 50.0),
     "claude-mythos-5": Rate(10.0, 50.0),
+    "claude-opus-5-5": Rate(4.0, 20.0, 0.05),
     "claude-opus-5": Rate(5.0, 25.0),
     "claude-opus-4-8": Rate(5.0, 25.0),
     "claude-opus-4-7": Rate(5.0, 25.0),
