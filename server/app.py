@@ -97,6 +97,30 @@ class BodySizeLimitMiddleware:
             await _send_json(send, 413, "Request body too large")
 
 
+class RejectEncodedTraversalMiddleware:
+    """Refuse percent-encoded path traversal before any routing.
+
+    Cloudflare Access matches the *raw* request path against the `/api` Bypass
+    policy, but uvicorn decodes `%2f`/`%2e` before the router sees it. So
+    `/api/..%2f` slips past the Access wall guarding the dashboard, then
+    normalises to `/` here and the static mount serves `index.html`
+    unauthenticated. No legitimate Hydra path carries an encoded slash or dot,
+    or a `..` segment, so any request whose raw path does is refused with 400.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            raw = scope.get("raw_path") or scope["path"].encode()
+            lowered = raw.lower()
+            if b"%2e" in lowered or b"%2f" in lowered or b".." in raw:
+                await _send_json(send, 400, "Bad request path")
+                return
+        await self.app(scope, receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not config.AUTH_TOKEN and not config.ALLOW_NO_AUTH:
@@ -124,6 +148,10 @@ if config.PUBLIC_ORIGIN:
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type", "X-Hydra-Flow"],
     )
+
+
+# Outermost: refuse encoded path traversal before routing (see the class above).
+app.add_middleware(RejectEncodedTraversalMiddleware)
 
 
 app.include_router(hooks.router)
