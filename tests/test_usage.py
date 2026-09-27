@@ -6,7 +6,11 @@ re-runs, and resumed sessions (which copy prior history under a new session_id)
 safe. Most of these tests exist to pin that down.
 """
 
+import sqlite3
+
 import pytest
+
+from server.db import get_db
 
 pytestmark = pytest.mark.asyncio
 
@@ -34,6 +38,258 @@ async def _post(client, session_id, messages, instance="pi"):
         json={"session_id": session_id, "messages": messages},
         headers={"X-Instance-Id": instance},
     )
+
+
+def _codex_msg(message_id: str, session_id: str = "codex-root", **over):
+    message = _msg(
+        message_id,
+        harness="codex-cli",
+        model="gpt-5.6-sol",
+        cache_write_1h_tokens=0,
+    )
+    message["session_id"] = session_id
+    message.update(over)
+    return message
+
+
+async def _reconcile(client, messages, *, apply=False, instance="pi"):
+    return await client.post(
+        "/api/usage/reconcile/codex",
+        json={"apply": apply, "messages": messages},
+        headers={"X-Instance-Id": instance},
+    )
+
+
+async def _usage_row(message_id: str):
+    db = await get_db()
+    rows = list(await db.execute_fetchall(
+        "SELECT * FROM usage_messages WHERE message_id = ?", (message_id,)
+    ))
+    return dict(rows[0]) if rows else None
+
+
+async def test_codex_reconcile_preview_does_not_mutate(client):
+    response = await _reconcile(client, [_codex_msg("codex:one")])
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "inserted": 1,
+        "updated": 0,
+        "unchanged": 0,
+        "foreign_unchanged": 0,
+        "conflicts": 0,
+        "conflict_ids": [],
+        "applied": False,
+    }
+    assert await _usage_row("codex:one") is None
+
+
+async def test_codex_reconcile_apply_insert_and_idempotence(client):
+    message = _codex_msg("codex:one", session_id="source-root")
+
+    applied = await _reconcile(client, [message], apply=True)
+    replayed = await _reconcile(client, [message], apply=True)
+    row = await _usage_row("codex:one")
+
+    assert applied.json()["inserted"] == 1
+    assert applied.json()["applied"] is True
+    assert replayed.json()["unchanged"] == 1
+    assert row is not None
+    assert row["session_id"] == "source-root"
+    assert row["instance_id"] == "pi"
+    assert row["harness"] == "codex-cli"
+
+
+async def test_codex_reconcile_updates_exact_fields_and_preserves_provenance(client):
+    await _post(
+        client,
+        "stored-session",
+        [_msg("codex:one", harness="codex-cli", model="old", service_tier="priority")],
+        instance="pi",
+    )
+    before = await _usage_row("codex:one")
+    message = _codex_msg(
+        "codex:one",
+        session_id="new-source-session",
+        ts="2026-09-01T00:00:00Z",
+        cwd="/correct",
+        model="gpt-6-astra",
+        effort="high",
+        is_subagent=True,
+        agent_type="spawn",
+        service_tier=None,
+        speed="fast",
+        input_tokens=1,
+        output_tokens=2,
+        cache_read_tokens=3,
+        cache_write_5m_tokens=4,
+        cache_write_1h_tokens=5,
+        web_search_requests=6,
+        web_fetch_requests=7,
+    )
+
+    response = await _reconcile(client, [message], apply=True)
+    after = await _usage_row("codex:one")
+
+    assert response.json()["updated"] == 1
+    assert after is not None and before is not None
+    for field in (
+        "ts", "cwd", "model", "effort", "is_subagent", "agent_type", "speed",
+        "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_5m_tokens", "cache_write_1h_tokens",
+        "web_search_requests", "web_fetch_requests",
+    ):
+        expected = int(message[field]) if field == "is_subagent" else message[field]
+        assert after[field] == expected
+    assert after["service_tier"] == "priority"
+    assert after["session_id"] == before["session_id"] == "stored-session"
+    assert after["instance_id"] == before["instance_id"] == "pi"
+    assert after["received_at"] == before["received_at"]
+
+
+async def test_codex_reconcile_non_null_replayed_tier_is_canonical(client):
+    await _post(
+        client,
+        "stored",
+        [_msg("codex:tier", harness="codex-cli", model="gpt-6-astra")],
+        instance="pi",
+    )
+
+    response = await _reconcile(
+        client,
+        [_codex_msg("codex:tier", service_tier="priority", model="gpt-6-astra")],
+        apply=True,
+    )
+
+    assert response.json()["updated"] == 1
+    row = await _usage_row("codex:tier")
+    assert row is not None
+    assert row["service_tier"] == "priority"
+
+
+async def test_codex_reconcile_foreign_identical_is_unchanged(client):
+    message = _codex_msg("codex:foreign")
+    await _reconcile(client, [message], apply=True, instance="other")
+    before = await _usage_row("codex:foreign")
+
+    response = await _reconcile(client, [message], apply=True, instance="pi")
+
+    assert response.json()["foreign_unchanged"] == 1
+    assert response.json()["applied"] is True
+    assert await _usage_row("codex:foreign") == before
+
+
+async def test_codex_reconcile_foreign_difference_is_conflict(client):
+    message = _codex_msg("codex:foreign")
+    await _reconcile(client, [message], apply=True, instance="other")
+
+    response = await _reconcile(
+        client,
+        [{**message, "input_tokens": 999}],
+        apply=True,
+        instance="pi",
+    )
+
+    assert response.json()["conflicts"] == 1
+    assert response.json()["applied"] is False
+    row = await _usage_row("codex:foreign")
+    assert row is not None
+    assert row["input_tokens"] == message["input_tokens"]
+
+
+async def test_codex_reconcile_cross_harness_is_conflict(client):
+    await _post(client, "claude", [_msg("shared-id")], instance="pi")
+
+    response = await _reconcile(client, [_codex_msg("shared-id")], apply=True)
+
+    assert response.json()["conflicts"] == 1
+    assert response.json()["applied"] is False
+    row = await _usage_row("shared-id")
+    assert row is not None
+    assert row["harness"] == "claude-code"
+
+
+async def test_codex_reconcile_rejects_duplicate_ids_and_invalid_scope(client):
+    message = _codex_msg("codex:duplicate")
+    duplicate = await _reconcile(client, [message, message])
+    too_many = await _reconcile(
+        client, [_codex_msg(f"codex:{index}") for index in range(501)]
+    )
+    wrong_harness = await _reconcile(
+        client, [{**message, "harness": "claude-code"}]
+    )
+    missing_instance = await client.post(
+        "/api/usage/reconcile/codex", json={"messages": [message]}
+    )
+
+    assert duplicate.status_code == 422
+    assert too_many.status_code == 422
+    assert wrong_harness.status_code == 422
+    assert missing_instance.status_code == 422
+
+
+async def test_codex_reconcile_apply_rolls_back_whole_chunk(client):
+    original_one = _codex_msg("codex:one", input_tokens=1)
+    original_two = _codex_msg("codex:two", input_tokens=2)
+    await _reconcile(client, [original_one, original_two], apply=True)
+    db = await get_db()
+    await db.execute(
+        "CREATE TRIGGER fail_second_codex_update BEFORE UPDATE ON usage_messages "
+        "WHEN OLD.message_id = 'codex:two' BEGIN SELECT RAISE(ABORT, 'stop'); END"
+    )
+    await db.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await _reconcile(
+            client,
+            [
+                {**original_one, "input_tokens": 10},
+                {**original_two, "input_tokens": 20},
+            ],
+            apply=True,
+        )
+
+    row_one = await _usage_row("codex:one")
+    row_two = await _usage_row("codex:two")
+    assert row_one is not None and row_two is not None
+    assert row_one["input_tokens"] == 1
+    assert row_two["input_tokens"] == 2
+
+
+async def test_codex_reconcile_rolls_back_insert_when_update_fails(client):
+    original = _codex_msg("codex:stored", input_tokens=1)
+    await _reconcile(client, [original], apply=True)
+    db = await get_db()
+    await db.execute(
+        "CREATE TRIGGER fail_codex_update BEFORE UPDATE ON usage_messages "
+        "WHEN OLD.message_id = 'codex:stored' BEGIN SELECT RAISE(ABORT, 'stop'); END"
+    )
+    await db.commit()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await _reconcile(
+            client,
+            [
+                _codex_msg("codex:new", input_tokens=2),
+                {**original, "input_tokens": 3},
+            ],
+            apply=True,
+        )
+
+    stored = await _usage_row("codex:stored")
+    assert stored is not None
+    assert stored["input_tokens"] == 1
+    assert await _usage_row("codex:new") is None
+
+
+async def test_codex_reconcile_route_has_usage_body_allowance(client):
+    response = await client.post(
+        "/api/usage/reconcile/codex",
+        content=b'{"messages":[],"padding":"' + b"x" * (300 * 1024) + b'"}',
+        headers={"X-Instance-Id": "pi", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
 
 
 async def test_ingest_and_summary(client):
@@ -80,6 +336,18 @@ async def test_row_inserts_without_a_matching_session(client):
 async def test_empty_batch(client):
     res = await _post(client, "s1", [])
     assert res.json() == {"inserted": 0, "ignored": 0}
+
+
+async def test_known_unpriced_alias_is_noted_not_flagged(client):
+    await _post(client, "s1", [_msg("m1", model="codex-auto-review")])
+    body = (await client.get("/api/usage/summary?group_by=model")).json()
+
+    assert body["unpriced_models"] == []
+    assert body["known_unpriced_models"] == ["codex-auto-review"]
+    assert body["totals"]["unpriced_messages"] == 0
+    assert body["rows"][0]["unpriced_messages"] == 0
+    assert body["totals"]["cost_usd"] == 0.0
+    assert body["totals"]["output_tokens"] == 1000
 
 
 async def test_unknown_model_is_unpriced_not_free(client):
@@ -359,3 +627,72 @@ async def test_days_sort_newest_first(client):
     ])
     body = (await client.get("/api/usage/summary?group_by=day")).json()
     assert [r["key"] for r in body["rows"]] == ["2026-08-09", "2026-08-05", "2026-08-01"]
+
+
+async def test_fast_mode_prices_at_double_and_splits_the_group(client):
+    await _post(client, "s1", [
+        _msg("m1", model="gpt-6-astra", service_tier="default",
+             input_tokens=1_000_000, output_tokens=0,
+             cache_read_tokens=0, cache_write_1h_tokens=0),
+        _msg("m2", model="gpt-6-astra", service_tier="priority",
+             input_tokens=1_000_000, output_tokens=0,
+             cache_read_tokens=0, cache_write_1h_tokens=0),
+    ])
+
+    body = (await client.get("/api/usage/summary?group_by=model")).json()
+    row = next(r for r in body["rows"] if r["key"] == "gpt-6-astra")
+
+    # $10 at base + $20 at fast mode. Summing the counters first would have
+    # priced all 2M tokens at one rate and lost the difference.
+    assert row["cost_usd"] == pytest.approx(30.0)
+
+
+async def test_a_later_sweep_backfills_a_tier_it_did_not_know_before(client):
+    await _post(client, "s1", [
+        _msg("m1", model="gpt-6-astra", input_tokens=1_000_000, output_tokens=0,
+             cache_read_tokens=0, cache_write_1h_tokens=0),
+    ])
+    before = (await client.get("/api/usage/summary")).json()["totals"]["cost_usd"]
+
+    res = await _post(client, "s1", [
+        _msg("m1", model="gpt-6-astra", service_tier="priority",
+             input_tokens=1_000_000, output_tokens=0,
+             cache_read_tokens=0, cache_write_1h_tokens=0),
+    ])
+    after = (await client.get("/api/usage/summary")).json()["totals"]["cost_usd"]
+
+    assert res.json()["inserted"] == 0
+    assert before == pytest.approx(10.0)
+    assert after == pytest.approx(20.0)
+
+
+async def test_backfill_never_revises_a_tier_already_recorded(client):
+    await _post(client, "s1", [
+        _msg("m1", model="gpt-6-astra", service_tier="priority",
+             input_tokens=1_000_000, output_tokens=0,
+             cache_read_tokens=0, cache_write_1h_tokens=0),
+    ])
+    await _post(client, "s1", [
+        _msg("m1", model="gpt-6-astra", service_tier="default",
+             input_tokens=1_000_000, output_tokens=0,
+             cache_read_tokens=0, cache_write_1h_tokens=0),
+    ])
+
+    body = (await client.get("/api/usage/summary")).json()
+    assert body["totals"]["cost_usd"] == pytest.approx(20.0)
+
+
+async def test_backfill_leaves_token_counts_untouched(client):
+    await _post(client, "s1", [
+        _msg("m1", model="gpt-6-astra", input_tokens=1_000_000, output_tokens=0,
+             cache_read_tokens=0, cache_write_1h_tokens=0),
+    ])
+    await _post(client, "s1", [
+        _msg("m1", model="gpt-6-astra", service_tier="priority",
+             input_tokens=999, output_tokens=999,
+             cache_read_tokens=999, cache_write_1h_tokens=999),
+    ])
+
+    body = (await client.get("/api/usage/summary")).json()
+    assert body["totals"]["input_tokens"] == 1_000_000
+    assert body["totals"]["output_tokens"] == 0

@@ -34,6 +34,7 @@ from hydra_cli.sync import (
 )
 from hydra_cli.usage import cmd_report as _run_usage_report
 from hydra_cli.usage import run_backfill
+from hydra_cli.usage_codex import cmd_reconcile as _run_usage_reconcile
 from hydra_cli.usage_codex import cmd_sweep as _run_usage_sweep
 
 
@@ -524,6 +525,10 @@ def cmd_usage_sweep(args: argparse.Namespace) -> None:
     sys.exit(_run_usage_sweep(args))
 
 
+def cmd_usage_reconcile(args: argparse.Namespace) -> None:
+    sys.exit(_run_usage_reconcile(args))
+
+
 def cmd_usage_summary(args: argparse.Namespace) -> None:
     query = f"?group_by={args.group_by}"
     if args.since:
@@ -910,6 +915,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     usw.add_argument("--root", help="rollout root (default ~/.codex/sessions)")
     usw.add_argument("--reset", action="store_true", help="re-send every rollout")
+    ureconcile = usage_sub.add_parser(
+        "reconcile", help="reparse and reconcile historical usage"
+    )
+    ureconcile_sub = ureconcile.add_subparsers(dest="reconcile_harness", required=True)
+    urec_codex = ureconcile_sub.add_parser("codex", help="reconcile Codex rollouts")
+    urec_codex.add_argument("--root", help="rollout root (default ~/.codex/sessions)")
+    urec_codex.add_argument("--apply", action="store_true", help="apply the previewed changes")
     usm = usage_sub.add_parser("summary", help="print aggregated usage")
     usm.add_argument(
         "--group-by",
@@ -987,6 +999,7 @@ DISPATCH = {
     ("usage", "report"): cmd_usage_report,
     ("usage", "backfill"): cmd_usage_backfill,
     ("usage", "sweep"): cmd_usage_sweep,
+    ("usage", "reconcile"): cmd_usage_reconcile,
     ("usage", "summary"): cmd_usage_summary,
     ("sync", None): cmd_sync,
     ("codex-session-start", None): cmd_codex_session_start,

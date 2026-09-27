@@ -378,11 +378,14 @@ async function refresh() {
 
         const warn = $("unpriced-warning");
         const un = d.day.unpriced_models;
-        warn.hidden = !un.length;
-        if (un.length) {
-            warn.innerHTML = `<p class="uz-warning">No rate known for ${un.map(escHtml).join(", ")} —
-                tokens counted, cost excluded. Add them to server/pricing.py.</p>`;
-        }
+        const known = d.day.known_unpriced_models || [];
+        warn.hidden = !un.length && !known.length;
+        warn.innerHTML = (un.length
+            ? `<p class="uz-warning">No rate known for ${un.map(escHtml).join(", ")} —
+                tokens counted, cost excluded. Add them to server/pricing.py.</p>` : "")
+            + (known.length
+            ? `<p class="uz-note">${known.map(escHtml).join(", ")} ${known.length > 1 ? "are" : "is"}
+                currently unpriced.</p>` : "");
     } catch (err) {
         $("kpis").innerHTML = `<p class="empty-state">Failed to load: ${escHtml(err.message)}</p>`;
     }

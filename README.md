@@ -37,7 +37,7 @@ Two loops run continuously:
 
 **Observation loop** - every Claude Code tool call fires an HTTP hook to `/api/hooks/event`. The server tracks session state transitions (active / idle / waiting_input / ended) and broadcasts them over Server-Sent Events to any open dashboard.
 
-**Accounting loop** - a Claude Code Stop hook runs `python -m hydra_cli usage report`, which parses the session's transcript and its subagents' and posts per-message token counts to `/api/usage/messages`. Codex Stop and SessionEnd hooks run `python -m hydra_cli usage sweep`, which incrementally scans all local rollout files. Rows are content-keyed, so retries, sweeps and `python -m hydra_cli usage backfill` are idempotent; `/usage` prices both subscriptions at notional API-equivalent rates.
+**Accounting loop** - a Claude Code Stop hook runs `python -m hydra_cli usage report`, which parses the session's transcript and its subagents' and posts per-message token counts to `/api/usage/messages`. Codex Stop and SessionEnd hooks run `python -m hydra_cli usage sweep`, which incrementally scans all local rollout files. Rows are content-keyed, so retries, sweeps and `python -m hydra_cli usage backfill` are idempotent; `/usage` prices both subscriptions at notional API-equivalent rates. `python -m hydra_cli usage reconcile codex` dry-runs a full Codex reparse against stored rows; add `--apply` to repair rows owned by the current instance without touching sweep offsets.
 
 Same bearer token, same server, but the two loops don't depend on each other.
 

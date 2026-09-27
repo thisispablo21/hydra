@@ -246,3 +246,24 @@ class UsageBatch(BaseModel):
     `instance_id` rides the X-Instance-Id header like every other client call."""
     session_id: str = Field(min_length=1, max_length=128)
     messages: list[UsageMessage] = Field(default_factory=list)
+
+
+class CodexReconcileMessage(UsageMessage):
+    """One reparsed Codex row and the rollout's source session."""
+
+    session_id: str = Field(min_length=1, max_length=128)
+    harness: Literal["codex-cli"] = "codex-cli"
+
+
+class CodexReconcileBatch(BaseModel):
+    """Preview or apply at most one client chunk of Codex reconciliation rows."""
+
+    apply: bool = False
+    messages: list[CodexReconcileMessage] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_message_ids(self) -> CodexReconcileBatch:
+        ids = [message.message_id for message in self.messages]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate message_id in reconciliation request")
+        return self

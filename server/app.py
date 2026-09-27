@@ -20,6 +20,7 @@ _BODY_LIMITS: dict[str, int] = {
     # Usage batches are chunked at 500 messages by the client; backfill sends
     # them back to back, so this needs headroom over the default.
     "/api/usage/messages": 1024 * 1024,
+    "/api/usage/reconcile/codex": 1024 * 1024,
 }
 _DEFAULT_BODY_LIMIT = 256 * 1024
 
