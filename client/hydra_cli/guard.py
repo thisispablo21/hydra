@@ -176,20 +176,61 @@ def _writes_memory_path(
     return False
 
 
+_HEREDOC = re.compile(
+    r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&)]|$)"
+)
+_CRUDE_SEPARATOR = re.compile(r"\n|;|&&|\|\||[|&]")
+_CRUDE_REDIRECT = re.compile(r">>|>")
+
+
+def _strip_heredocs(command: str) -> str:
+    """Drop heredoc bodies before lexing. A body is data the shell never lexes,
+    and an apostrophe inside one is what made shlex give up in every refusal so
+    far (2026-09-09, 2026-10-15, 2026-10-16: notes sent to Sisyphus that merely
+    mentioned a hydra memory). The `<<WORD` token stays; the terminator goes."""
+    lines = command.split("\n")
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        kept.append(line)
+        index += 1
+        for match in _HEREDOC.finditer(line):
+            strip_tabs, terminator = match.group(1), match.group(3)
+            while index < len(lines):
+                body_line = lines[index]
+                index += 1
+                if (body_line.lstrip("\t") if strip_tabs else body_line) == terminator:
+                    break
+    return "\n".join(kept)
+
+
+def _crude_commands(command: str) -> list[list[str]]:
+    """Whitespace lexer for a command shlex refused (an unbalanced quote outside
+    any heredoc, a trailing backslash). Quotes are stripped from word edges but
+    nothing is unquoted, so the same two checks run over the same words a bare
+    command would produce, and a path inside a program string stays one word."""
+    commands: list[list[str]] = []
+    for segment in _CRUDE_SEPARATOR.split(command):
+        padded = _CRUDE_REDIRECT.sub(r" \g<0> ", segment)
+        words = [word for word in (raw.strip("'\"") for raw in padded.split()) if word]
+        if words:
+            commands.append(words)
+    return commands
+
+
 def _guard_bash(
     command: str, env: Mapping[str, str], *, cwd: Path, home: Path
 ) -> str | None:
+    stripped = _strip_heredocs(command)
     try:
-        commands = _simple_commands(command)
+        commands, prefix = _simple_commands(stripped), ""
     except ValueError:
-        ambiguous = "hydra" in command or "hydra_cli" in command or "/memory/" in command
-        if "memory" in command and ambiguous:
-            return _reason(env, _AMBIGUOUS_PREFIX)
-        return None
+        commands, prefix = _crude_commands(stripped), _AMBIGUOUS_PREFIX
     if any(_is_memory_command(words) for words in commands):
-        return _reason(env)
+        return _reason(env, prefix)
     if any(_writes_memory_path(words, env, cwd, home) for words in commands):
-        return _reason(env)
+        return _reason(env, prefix)
     return None
 
 

@@ -117,6 +117,69 @@ def test_bash_denies_ambiguous_unbalanced_quote(tmp_path: Path) -> None:
     assert reason.startswith("This command contains an ambiguous memory write.")
 
 
+_SISYPHUS_NOTE = (
+    "curl -K ~/.config/sisyphus/write.curlrc https://sisyphus.example/api/agent/todos/5"
+    " --data-urlencode \"note@-\" <<'EOF'\n"
+    "Bit again: the hydra memory global-skills-roadmap isn't where I left it.\n"
+    "hydra memory delete 5\n"
+    "EOF"
+)
+
+
+def test_bash_allows_a_heredoc_body_that_talks_about_memories(tmp_path: Path) -> None:
+    """The 2026-10-16 refusal: a Sisyphus note whose BODY named a hydra memory and
+    held an apostrophe. The body is data, and the apostrophe broke the parser."""
+    assert run_guard(payload("Bash", {"command": _SISYPHUS_NOTE}), {}, home=tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        _SISYPHUS_NOTE + "\nhydra memory delete 5",
+        "cat <<-X\n\tbody\n\tX\nhydra memory delete 5",
+        "grep -c x <<< 'hydra memory' /tmp/f\nhydra memory delete 5",
+    ],
+)
+def test_bash_still_denies_a_memory_write_after_a_heredoc(
+    tmp_path: Path, command: str
+) -> None:
+    """Only the body is stripped: the terminator, a `<<-` body with tabs and a
+    here-string are told apart, and the command after it is still read."""
+    assert run_guard(payload("Bash", {"command": command}), {}, home=tmp_path) is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo \"it's; hydra memory delete 5",
+        "echo \"it's > ~/.claude/projects/proj/memory/foo.md",
+        "echo \"it's; rm ~/.claude/projects/proj/memory/foo.md",
+        "python -m hydra_cli memory delete 5 \\",
+    ],
+)
+def test_bash_fallback_denies_writes_when_the_parser_gives_up(
+    tmp_path: Path, command: str
+) -> None:
+    reason = run_guard(payload("Bash", {"command": command}), {}, home=tmp_path)
+    assert reason is not None
+    assert reason.startswith("This command contains an ambiguous memory write.")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo \"it's; cat ~/.claude/projects/proj/memory/foo.md",
+        "echo \"it's; hydra memory delete 5 --flow sync",
+        "diff <(sort ~/.claude/projects/proj/memory/MEMORY.md) <(hydra memory list) \\",
+        "echo \"it's; curl -d 'the hydra memory x' https://sisyphus.example/api",
+    ],
+)
+def test_bash_fallback_allows_reads_and_marked_writes(tmp_path: Path, command: str) -> None:
+    """A parse failure used to refuse on three substrings alone; now the same two
+    checks run on a whitespace split, so a read or a marked write passes."""
+    assert run_guard(payload("Bash", {"command": command}), {}, home=tmp_path) is None
+
+
 @pytest.mark.parametrize(
     "command",
     [
