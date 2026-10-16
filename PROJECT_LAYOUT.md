@@ -145,4 +145,3 @@ schema.sql            - DDL; sessions.archived_at, memories project_slug FK + UN
                         config_hooks (server-distributed policy hooks: script + wiring),
                         usage_messages (per-API-message token counts, PK message_id, service_tier)
 ```
-
