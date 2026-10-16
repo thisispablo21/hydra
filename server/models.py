@@ -63,7 +63,9 @@ class EventRecord(BaseModel):
 
 class MemoryCreate(BaseModel):
     name: str
-    description: str = ""
+    # The description is the index line every session loads; 200 chars is the
+    # budget decided 2026-10-15, after descriptions had grown into incident lists.
+    description: str = Field(default="", max_length=200)
     type: MemoryType
     body: str = ""
     project_slug: str | None = None
@@ -86,7 +88,7 @@ class MemoryUpdate(BaseModel):
     fields are always written from their values, including default nulls.
     """
     name: str | None = None
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=200)
     type: MemoryType | None = None
     body: str | None = None
     project_slug: str | None = None

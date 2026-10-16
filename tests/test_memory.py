@@ -215,6 +215,30 @@ async def test_update_partial(client: AsyncClient):
     assert updated["body"] == "old body"  # unchanged
 
 
+async def test_description_at_the_cap_is_accepted(client: AsyncClient):
+    created = await _create_memory(client, name="capped", description="d" * 200)
+    assert len(created["description"]) == 200
+
+
+@pytest.mark.parametrize("length", [201, 1126])
+async def test_create_rejects_description_over_200_chars(client: AsyncClient, length: int):
+    res = await client.post(
+        "/api/memory",
+        json={"name": "too long", "type": "user", "description": "d" * length},
+    )
+    assert res.status_code == 422
+    assert "at most 200 characters" in res.text
+
+
+async def test_update_rejects_description_over_200_chars(client: AsyncClient):
+    created = await _create_memory(client, name="short desc")
+    res = await client.put(f"/api/memory/{created['id']}", json={"description": "d" * 201})
+    assert res.status_code == 422
+    assert "at most 200 characters" in res.text
+    res = await client.get(f"/api/memory/{created['id']}")
+    assert res.json()["description"] == "a test"
+
+
 async def test_update_nonexistent_returns_404(client: AsyncClient):
     res = await client.put("/api/memory/999", json={"name": "x"})
     assert res.status_code == 404
