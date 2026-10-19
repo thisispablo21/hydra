@@ -104,6 +104,7 @@ tests/
   test_migrations.py  - Legacy partial-index DB → UNIQUE(name) (twin collapse, rename,
                         idempotency)
   test_projects.py    - Project CRUD
+  test_project_update_cli.py - `project update` takes --desc only; --path is rejected (#262)
   test_sync.py        - CLI pull sync, parsing, pruning, provenance, canonical
                         filenames, empty-server safety
   test_commands.py    - /api/config/commands endpoints (CRUD, name validation, auth)
