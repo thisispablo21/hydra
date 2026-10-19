@@ -239,14 +239,12 @@ def cmd_project_create(args: argparse.Namespace) -> None:
 
 
 def cmd_project_update(args: argparse.Namespace) -> None:
-    payload: dict[str, str] = {}
-    if args.path:
-        payload["path"] = args.path
-    if args.desc is not None:
-        payload["description"] = args.desc
-    if not payload:
+    """Change a project's description. Paths are per machine and move with
+    `project attach --slug SLUG --cwd PATH`, never through this command."""
+    if args.desc is None:
         print("Nothing to update", file=sys.stderr)
         sys.exit(1)
+    payload: dict[str, str] = {"description": args.desc}
     status, body = api.put_json(f"/api/projects/{args.slug}", payload)
     if status != 200:
         _die(status, body)
@@ -811,9 +809,11 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--path", required=True)
     pc.add_argument("--desc", default="")
 
-    pu = proj_sub.add_parser("update")
+    pu = proj_sub.add_parser(
+        "update",
+        help="change the description; to move a path use `project attach --slug SLUG --cwd PATH`",
+    )
     pu.add_argument("slug")
-    pu.add_argument("--path")
     pu.add_argument("--desc")
 
     pd = proj_sub.add_parser("delete")
