@@ -20,13 +20,13 @@ PROJECTS = [{"slug": "ars", "path": "/test/proj"}]
 
 MEMORIES = [
     {"id": 1, "name": "global-one", "type": "user", "description": "a user fact",
-     "body": "x" * 500, "project_slug": None},
+     "body": "x" * 500, "project_slug": None, "topics": ["infrastructure", "git"]},
     {"id": 2, "name": "ars-one", "type": "project", "description": "an ars fact",
-     "body": "y" * 500, "project_slug": "ars"},
+     "body": "y" * 500, "project_slug": "ars", "topics": None},
     {"id": 3, "name": "other-one", "type": "project", "description": "elsewhere",
      "body": "z" * 500, "project_slug": "pquant"},
     {"id": 4, "name": "global-two", "type": "feedback", "description": None,
-     "body": "w" * 500, "project_slug": None},
+     "body": "w" * 500, "project_slug": None, "topics": []},
 ]
 
 
@@ -174,11 +174,11 @@ def test_json_keeps_full_rows(api, resolver, capsys):
 def test_brief_line_carries_the_index_and_drops_the_body(api, resolver, capsys):
     run()
     out = capsys.readouterr().out
-    assert "2 project ars - ars-one - an ars fact" in out
-    assert "1 user GLOBAL - global-one - a user fact" in out
+    assert "2 project ars [unclassified] - ars-one - an ars fact" in out
+    assert "1 user GLOBAL [infrastructure,git] - global-one - a user fact" in out
     assert "y" * 500 not in out
-    # description=None must not print "None"
-    assert "4 feedback GLOBAL - global-two - " in out
+    # description=None must not print "None"; [] is catalog-only
+    assert "4 feedback GLOBAL [catalog] - global-two - " in out
 
 
 def test_scope_flags_are_mutually_exclusive():

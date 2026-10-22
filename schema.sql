@@ -48,6 +48,32 @@ CREATE TABLE IF NOT EXISTS skill_variants (
     PRIMARY KEY (name, variant)
 );
 
+-- Exact append-only snapshots of the reserved instructions document.
+CREATE TABLE IF NOT EXISTS document_versions (
+    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_name TEXT NOT NULL CHECK (document_name = 'instructions'),
+    snapshot TEXT,
+    published_at TEXT,
+    recorded_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    author_instance_id TEXT,
+    author_session_id TEXT
+);
+CREATE TRIGGER IF NOT EXISTS document_versions_no_update
+BEFORE UPDATE ON document_versions BEGIN
+    SELECT RAISE(ABORT, 'document versions are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS document_versions_no_delete
+BEFORE DELETE ON document_versions BEGIN
+    SELECT RAISE(ABORT, 'document versions are append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS memory_topics (
+    slug TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL
+);
+
 -- Server-distributed slash commands. One row per command; name is the
 -- slash-command name without ".md" (e.g. "sync", "finish"). Content is an
 -- opaque markdown blob - the server never interprets it. Clients pull these
@@ -127,6 +153,7 @@ CREATE TABLE IF NOT EXISTS memories (
     author_harness TEXT,
     author_session_id TEXT,
     author_model TEXT,
+    topics TEXT, -- NULL = unclassified; JSON [] = catalog only
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

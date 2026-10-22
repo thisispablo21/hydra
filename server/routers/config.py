@@ -6,8 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from server.auth import require_auth
 from server.db import get_db
-from server.models import HookUpsert
-from server.services.skills import SKILLS_WRITE_LOCK, validate
+from server.models import HookUpsert, MemoryTopic
+from server.routers.memory import require_flow
+from server.services.instruction_history import append_revision, instant, now
+from server.services.memory_routing import MEMORY_WRITE_LOCK
+from server.services.skills import SKILLS_WRITE_LOCK, render, validate
 
 router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(require_auth)])
 
@@ -18,15 +21,61 @@ router = APIRouter(prefix="/api/config", tags=["config"], dependencies=[Depends(
 _CONFIG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
-@router.get("/claude-md")
-async def get_claude_md():
-    db = await get_db()
-    rows = list(
-        await db.execute_fetchall(
-            "SELECT body FROM skill_variants WHERE name = 'instructions' AND variant = 'common'"
+@router.get("/claude-md/history")
+async def instructions_history():
+    async with SKILLS_WRITE_LOCK:
+        db = await get_db()
+        rows = await db.execute_fetchall(
+            """SELECT revision_id, published_at, recorded_at, source,
+                      author_instance_id, author_session_id
+               FROM document_versions WHERE document_name = 'instructions'
+               ORDER BY COALESCE(published_at, recorded_at) DESC, revision_id DESC"""
         )
-    )
-    content = rows[0][0] if rows else ""
+    return [dict(row) for row in rows]
+
+
+@router.get("/claude-md")
+async def get_claude_md(at: str | None = None, harness: str | None = None):
+    boundary = None
+    if at is not None:
+        try:
+            boundary = instant(at)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    async with SKILLS_WRITE_LOCK:
+        db = await get_db()
+        if boundary is not None:
+            rows = list(
+                await db.execute_fetchall(
+                    """SELECT snapshot FROM document_versions
+                   WHERE document_name = 'instructions'
+                     AND COALESCE(published_at, recorded_at) <= ?
+                   ORDER BY COALESCE(published_at, recorded_at) DESC, revision_id DESC LIMIT 1""",
+                    (boundary,),
+                )
+            )
+            if not rows or rows[0][0] is None:
+                raise HTTPException(
+                    status_code=404, detail="Instructions state is unknown at this time"
+                )
+            snapshot = json.loads(rows[0][0])
+            content, variants = snapshot["common"], snapshot["variants"]
+        else:
+            rows = await db.execute_fetchall(
+                "SELECT variant, body FROM skill_variants WHERE name = 'instructions'"
+            )
+            content = next((row[1] for row in rows if row[0] == "common"), "")
+            variants = (
+                {row[0]: json.loads(row[1]) for row in rows if row[0] != "common"}
+                if harness is not None
+                else {}
+            )
+    if harness is not None:
+        if harness not in variants:
+            raise HTTPException(
+                status_code=404, detail=f"Instructions unavailable for harness {harness!r}"
+            )
+        content = render(content, variants[harness])
     return Response(content=content, media_type="text/plain")
 
 
@@ -35,50 +84,79 @@ async def put_claude_md(request: Request):
     content = (await request.body()).decode("utf-8")
     if not content.strip():
         raise HTTPException(status_code=400, detail="CLAUDE.md content cannot be empty")
-    now = datetime.now(UTC).replace(microsecond=0).isoformat()
     async with SKILLS_WRITE_LOCK:
         db = await get_db()
+        timestamp = now()
         rows = await db.execute_fetchall(
             "SELECT variant, body FROM skill_variants WHERE name = 'instructions'"
         )
-        variants = {}
-        for row in rows:
-            if row[0] == "common":
-                continue
-            try:
-                slots = json.loads(row[1])
-            except json.JSONDecodeError:
-                continue
-            if isinstance(slots, dict) and all(
-                isinstance(key, str) and isinstance(value, str)
-                for key, value in slots.items()
-            ):
-                variants[row[0]] = slots
+        variants = {row[0]: json.loads(row[1]) for row in rows if row[0] != "common"}
         try:
             validate(content, variants)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-
         try:
             await db.execute(
                 """INSERT INTO skills
                        (name, kind, enabled, implicit_invocation, instances, updated_at)
                    VALUES ('instructions', 'instructions', 1, 0, NULL, ?)
                    ON CONFLICT(name) DO UPDATE SET
-                       kind = 'instructions', enabled = 1, updated_at = ?""",
-                (now, now),
+                       kind = 'instructions', enabled = 1, updated_at = excluded.updated_at""",
+                (timestamp,),
             )
             await db.execute(
                 """INSERT INTO skill_variants (name, variant, body)
                    VALUES ('instructions', 'common', ?)
-                   ON CONFLICT(name, variant) DO UPDATE SET body = ?""",
-                (content, content),
+                   ON CONFLICT(name, variant) DO UPDATE SET body = excluded.body""",
+                (content,),
+            )
+            await append_revision(
+                db,
+                content,
+                variants,
+                published_at=timestamp,
+                source="claude-md-api",
+                author_instance_id=request.headers.get("X-Instance-Id"),
+                author_session_id=request.headers.get("X-Session-Id"),
             )
             await db.commit()
         except Exception:
             await db.rollback()
             raise
-    return {"status": "ok", "updated_at": now}
+    return {"status": "ok", "updated_at": timestamp}
+
+
+@router.get("/memory-topics")
+async def get_memory_topics() -> list[MemoryTopic]:
+    async with MEMORY_WRITE_LOCK:
+        db = await get_db()
+        rows = await db.execute_fetchall("SELECT * FROM memory_topics ORDER BY slug")
+    return [MemoryTopic(**dict(row)) for row in rows]
+
+
+@router.put("/memory-topics", dependencies=[Depends(require_flow)])
+async def put_memory_topics(topics: list[MemoryTopic]):
+    slugs = {topic.slug for topic in topics}
+    if len(slugs) != len(topics):
+        raise HTTPException(status_code=422, detail="Duplicate topic slugs")
+    async with MEMORY_WRITE_LOCK:
+        db = await get_db()
+        rows = await db.execute_fetchall("SELECT topics FROM memories WHERE topics IS NOT NULL")
+        referenced = {slug for row in rows for slug in json.loads(row[0])}
+        removed = sorted(referenced - slugs)
+        if removed:
+            raise HTTPException(status_code=409, detail=f"Topic still referenced: {removed[0]}")
+        try:
+            await db.execute("DELETE FROM memory_topics")
+            await db.executemany(
+                "INSERT INTO memory_topics (slug, title, description) VALUES (?, ?, ?)",
+                [(topic.slug, topic.title, topic.description) for topic in topics],
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+    return {"status": "ok"}
 
 
 @router.get("/commands")
@@ -123,11 +201,16 @@ async def put_command(name: str, request: Request):
 
 @router.delete("/commands/{name}", status_code=204)
 async def delete_command(name: str):
-    db = await get_db()
-    cursor = await db.execute("DELETE FROM config_commands WHERE name = ?", (name,))
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Command not found")
-    await db.commit()
+    async with SKILLS_WRITE_LOCK:
+        db = await get_db()
+        try:
+            cursor = await db.execute("DELETE FROM config_commands WHERE name = ?", (name,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Command not found")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 def _hook_row_to_dict(row) -> dict:
@@ -280,8 +363,13 @@ async def put_hook(name: str, hook: HookUpsert):
 
 @router.delete("/hooks/{name}", status_code=204)
 async def delete_hook(name: str):
-    db = await get_db()
-    cursor = await db.execute("DELETE FROM config_hooks WHERE name = ?", (name,))
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Hook not found")
-    await db.commit()
+    async with SKILLS_WRITE_LOCK:
+        db = await get_db()
+        try:
+            cursor = await db.execute("DELETE FROM config_hooks WHERE name = ?", (name,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Hook not found")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise

@@ -129,13 +129,19 @@ def _is_memory_command(words: list[str]) -> bool:
         words = words[1:]
     if any(word == "--flow" or word.startswith("--flow=") for word in words):
         return False
+    # argparse prints help and exits before any request is built, so this is a read.
+    if any(word in ("-h", "--help") for word in words):
+        return False
 
     module_invocation = any(
         words[index : index + 2] == ["-m", "hydra_cli"]
         for index in range(len(words) - 1)
     )
     for index in range(len(words) - 1):
-        if words[index] != "memory" or words[index + 1] not in _MEMORY_VERBS:
+        catalog_write = words[index:index + 3] == ["memory", "topics", "put"]
+        if words[index] != "memory" or (
+            words[index + 1] not in _MEMORY_VERBS and not catalog_write
+        ):
             continue
         if index > 0 and _basename(words[index - 1]) == "hydra":
             return True

@@ -53,7 +53,10 @@ class FakeAPI:
         if path == "/api/memory":
             return 200, json.dumps(self.memories)
         if path.startswith("/api/memory/"):
-            mem_id = int(path.rsplit("/", 1)[1])
+            try:
+                mem_id = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                return 422, json.dumps({"detail": "memory_id must be an integer"})
             for m in self.memories:
                 if m["id"] == mem_id:
                     return 200, json.dumps(m)
@@ -193,6 +196,8 @@ def test_parse_valid_memory(tmp_path: Path):
     assert parsed == {
         "id": 7, "name": "foo", "description": "d", "type": "user",
         "body": "body text", "updated_at": "T1",
+        "topics": None, "project_slug": None,
+        "routing_invalid": False, "routing_scope_known": False,
     }
 
 

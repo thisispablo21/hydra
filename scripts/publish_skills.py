@@ -133,6 +133,12 @@ def put_skill(url: str, token: str, name: str, body: dict[str, Any]) -> tuple[in
         },
         method="PUT",
     )
+    instance = os.environ.get("HYDRA_INSTANCE_ID", "").strip()
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_SESSION_ID")
+    if instance:
+        request.add_header("X-Instance-Id", instance)
+    if session:
+        request.add_header("X-Session-Id", session)
     try:
         with urllib.request.urlopen(request) as response:
             return response.status, response.read().decode(errors="replace")

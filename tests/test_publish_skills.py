@@ -135,3 +135,26 @@ def test_http_failure_does_not_stop_other_skills(
     monkeypatch.setattr(publish_skills, "put_skill", put_skill)
     assert publish_skills.publish(tmp_path, "http://hydra", "token") == 1
     assert calls == ["bad", "good"]
+
+
+def test_publication_carries_instance_and_session(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv('HYDRA_INSTANCE_ID', 'instance-test')
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    monkeypatch.setenv('CODEX_SESSION_ID', 'session-test')
+    requests = []
+    class Response:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            return b'{}'
+    def urlopen(request):
+        requests.append(request)
+        return Response()
+    monkeypatch.setattr(publish_skills.urllib.request, 'urlopen', urlopen)
+    result = publish_skills.put_skill('http://isolated', 'test-token', 'instructions', {})
+    assert result == (200, '{}')
+    assert requests[0].get_header('X-instance-id') == 'instance-test'
+    assert requests[0].get_header('X-session-id') == 'session-test'

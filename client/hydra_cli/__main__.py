@@ -8,6 +8,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 
 from hydra_cli import api
 from hydra_cli.apply_settings import cmd_apply_settings
@@ -21,6 +22,7 @@ from hydra_cli.codex import (
 from hydra_cli.commands import run_pull as run_commands_pull
 from hydra_cli.guard import main as run_guard_main
 from hydra_cli.hooks import run_pull as run_hooks_pull
+from hydra_cli.memory_routing import validate_snapshot, validate_topics
 from hydra_cli.prune import cmd_project_prune
 from hydra_cli.remote import cmd_capture_remote_url, scan_bridge_records
 from hydra_cli.skills import HARNESSES
@@ -65,10 +67,26 @@ def _read_body(args: argparse.Namespace) -> str:
 # --- memory commands ---
 
 
+def _add_routing_flags(parser: argparse.ArgumentParser) -> None:
+    routing = parser.add_mutually_exclusive_group()
+    routing.add_argument("--topic", action="append", metavar="SLUG")
+    routing.add_argument("--catalog-only", action="store_true")
+    routing.add_argument("--unclassified", action="store_true")
+
+
+def _routing_token(topics: object) -> str:
+    # Mirrors the router: null loads at startup, [] is catalog-only, else topic slugs.
+    if topics is None:
+        return "unclassified"
+    if isinstance(topics, list):
+        return ",".join(str(slug) for slug in topics) if topics else "catalog"
+    return "invalid"
+
+
 def _brief_line(mem: dict[str, object]) -> str:
     scope = mem.get("project_slug") or "GLOBAL"
     return (
-        f"{mem['id']} {mem['type']} {scope}"
+        f"{mem['id']} {mem['type']} {scope} [{_routing_token(mem.get('topics'))}]"
         f" - {mem['name']} - {mem.get('description') or ''}"
     )
 
@@ -115,6 +133,14 @@ def cmd_memory_list(args: argparse.Namespace) -> None:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    topics = getattr(args, "topic", None)
+    if topics:
+        memories = [m for m in memories if isinstance(m.get("topics"), list)
+                    and any(t in m["topics"] for t in topics)]
+    elif getattr(args, "catalog_only", False):
+        memories = [m for m in memories if m.get("topics") == []]
+    elif getattr(args, "unclassified", False):
+        memories = [m for m in memories if m.get("topics") is None]
     if args.json:
         _print_json(memories)
         return
@@ -130,11 +156,79 @@ def cmd_memory_get(args: argparse.Namespace) -> None:
     _print_json(json.loads(body))
 
 
+def _routing_payload(args: argparse.Namespace) -> dict[str, object]:
+    topics = getattr(args, "topic", None)
+    if topics:
+        if len(set(topics)) != len(topics):
+            _die(400, "Duplicate topic flags")
+        return {"topics": topics}
+    if getattr(args, "catalog_only", False):
+        return {"topics": []}
+    if getattr(args, "unclassified", False):
+        return {"topics": None}
+    return {}
+
+
+def _check_routing_support() -> None:
+    status, body = api.get("/api/memory/snapshot")
+    if status != 200:
+        _die(status, "Server must support routing snapshots before editing routing")
+    try:
+        validate_snapshot(json.loads(body), None)
+    except (ValueError, TypeError) as exc:
+        _die(400, str(exc))
+
+
+def _verify_routing_response(body: str, payload: dict[str, object]) -> None:
+    if "topics" in payload:
+        response = json.loads(body)
+        if "topics" not in response or response["topics"] != payload["topics"]:
+            _die(502, "Server did not confirm requested routing; inspect the memory "
+                 "before retrying")
+
+
+def cmd_memory_topics_list(args: argparse.Namespace) -> None:
+    status, body = api.get("/api/config/memory-topics")
+    if status != 200:
+        _die(status, body)
+    _print_json(validate_topics(json.loads(body)))
+
+
+def cmd_memory_topics_put(args: argparse.Namespace) -> None:
+    topics = validate_topics(json.loads(Path(args.file).read_text(encoding="utf-8")))
+    _check_routing_support()
+    status, body = api.put_json(
+        "/api/config/memory-topics", topics, headers={"X-Hydra-Flow": args.flow},
+    )
+    if status != 200:
+        _die(status, body)
+    status, body = api.get("/api/config/memory-topics")
+    if status != 200:
+        _die(status, "Catalog publication succeeded but readback failed; inspect before retrying")
+    response = validate_topics(json.loads(body))
+    if sorted(response, key=lambda t: t["slug"]) != sorted(topics, key=lambda t: t["slug"]):
+        _die(502, "Server did not confirm requested topic catalog")
+    _print_json(response)
+
+
+def cmd_memory_topics(args: argparse.Namespace) -> None:
+    if args.topics_command == "list":
+        cmd_memory_topics_list(args)
+    elif args.topics_command == "put":
+        cmd_memory_topics_put(args)
+    else:
+        _die(400, "Choose memory topics list or put")
+
+
 def cmd_memory_create(args: argparse.Namespace) -> None:
     payload: dict[str, object] = {
         "name": args.name,
         "type": args.type,
     }
+    routing = _routing_payload(args)
+    if routing:
+        _check_routing_support()
+    payload.update(routing)
     if args.desc:
         payload["description"] = args.desc
     if args.project:
@@ -152,11 +246,16 @@ def cmd_memory_create(args: argparse.Namespace) -> None:
     status, body = api.post("/api/memory", payload, headers=headers)
     if status != 200:
         _die(status, body)
+    _verify_routing_response(body, payload)
     _print_json(json.loads(body))
 
 
 def cmd_memory_update(args: argparse.Namespace) -> None:
     payload: dict[str, object] = {}
+    routing = _routing_payload(args)
+    if routing:
+        _check_routing_support()
+    payload.update(routing)
     if args.name:
         payload["name"] = args.name
     if args.type:
@@ -186,18 +285,20 @@ def cmd_memory_update(args: argparse.Namespace) -> None:
     if not payload:
         print("Nothing to update", file=sys.stderr)
         sys.exit(1)
-    payload.update(author_fields(
-        os.environ,
-        claude_root=Path("~/.claude/projects").expanduser(),
-        codex_root=Path("~/.codex/sessions").expanduser(),
-        model=args.model,
-    ))
+    if set(payload) != {"topics"}:
+        payload.update(author_fields(
+            os.environ,
+            claude_root=Path("~/.claude/projects").expanduser(),
+            codex_root=Path("~/.codex/sessions").expanduser(),
+            model=args.model,
+        ))
     headers = {"X-Hydra-Flow": args.flow} if args.flow else None
     status, body = api.put_json(
         f"/api/memory/{args.id}", payload, headers=headers
     )
     if status != 200:
         _die(status, body)
+    _verify_routing_response(body, payload)
     _print_json(json.loads(body))
 
 
@@ -277,7 +378,9 @@ def cmd_project_attach(args: argparse.Namespace) -> None:
 
 
 def cmd_config_get_claude_md(args: argparse.Namespace) -> None:
-    status, body = api.get("/api/config/claude-md")
+    params = {key: getattr(args, key) for key in ("at", "harness") if getattr(args, key, None)}
+    query = "?" + urlencode(params) if params else ""
+    status, body = api.get("/api/config/claude-md" + query)
     if status != 200:
         _die(status, body)
     print(body, end="")
@@ -286,7 +389,16 @@ def cmd_config_get_claude_md(args: argparse.Namespace) -> None:
 def cmd_config_put_claude_md(args: argparse.Namespace) -> None:
     with open(args.file, encoding="utf-8") as f:
         content = f.read()
-    status, body = api.put_text("/api/config/claude-md", content)
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_SESSION_ID")
+    headers = {"X-Session-Id": session} if session else None
+    status, body = api.put_text("/api/config/claude-md", content, headers=headers)
+    if status != 200:
+        _die(status, body)
+    _print_json(json.loads(body))
+
+
+def cmd_config_history(args: argparse.Namespace) -> None:
+    status, body = api.get("/api/config/claude-md/history")
     if status != 200:
         _die(status, body)
     _print_json(json.loads(body))
@@ -737,6 +849,7 @@ def build_parser() -> argparse.ArgumentParser:
     mem_sub = mem.add_subparsers(dest="command")
 
     ml = mem_sub.add_parser("list")
+    _add_routing_flags(ml)
     ml_scope = ml.add_mutually_exclusive_group()
     ml_scope.add_argument(
         "--project", metavar="SLUG",
@@ -759,6 +872,7 @@ def build_parser() -> argparse.ArgumentParser:
     mg.add_argument("id", type=int)
 
     mc = mem_sub.add_parser("create")
+    _add_routing_flags(mc)
     mc.add_argument("--name", required=True)
     mc.add_argument("--type", required=True, choices=["user", "feedback", "project", "reference"])
     mc.add_argument("--desc", default="")
@@ -771,6 +885,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     mu = mem_sub.add_parser("update")
+    _add_routing_flags(mu)
     mu.add_argument("id", type=int)
     mu.add_argument("--name")
     mu.add_argument("--type", choices=["user", "feedback", "project", "reference"])
@@ -794,6 +909,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--flow",
         help="name of the human-gated flow this write belongs to (server requires it)",
     )
+
+    topics = mem_sub.add_parser("topics", help="read or replace the deployment topic catalog")
+    topics_sub = topics.add_subparsers(dest="topics_command")
+    topics_sub.add_parser("list")
+    topics_put = topics_sub.add_parser("put")
+    topics_put.add_argument("file", help="JSON array of slug/title/description objects")
+    topics_put.add_argument("--flow", required=True)
 
     # --- project ---
     proj = sub.add_parser("project")
@@ -844,7 +966,10 @@ def build_parser() -> argparse.ArgumentParser:
     cfg = sub.add_parser("config")
     cfg_sub = cfg.add_subparsers(dest="command")
 
-    cfg_sub.add_parser("get-claude-md")
+    cg = cfg_sub.add_parser("get-claude-md")
+    cg.add_argument("--at", help="timezone-qualified ISO timestamp")
+    cg.add_argument("--harness", help="render using this revision's saved harness slots")
+    cfg_sub.add_parser("history", help="list instruction publication revisions")
 
     cp = cfg_sub.add_parser("put-claude-md")
     cp.add_argument("file")
@@ -976,6 +1101,7 @@ DISPATCH = {
     ("memory", "create"): cmd_memory_create,
     ("memory", "update"): cmd_memory_update,
     ("memory", "delete"): cmd_memory_delete,
+    ("memory", "topics"): cmd_memory_topics,
     ("project", "list"): cmd_project_list,
     ("project", "get"): cmd_project_get,
     ("project", "create"): cmd_project_create,
@@ -985,6 +1111,7 @@ DISPATCH = {
     ("project", "prune"): cmd_project_prune,
     ("config", "get-claude-md"): cmd_config_get_claude_md,
     ("config", "put-claude-md"): cmd_config_put_claude_md,
+    ("config", "history"): cmd_config_history,
     ("commands", "pull"): cmd_commands_pull,
     ("commands", "put"): cmd_commands_put,
     ("commands", "get"): cmd_commands_get,

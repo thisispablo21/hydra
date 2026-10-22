@@ -75,9 +75,14 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
         )
     if "author_session_id" not in cols:
         await conn.execute("ALTER TABLE memories ADD COLUMN author_session_id TEXT")
+    if "topics" not in cols:
+        await conn.execute("ALTER TABLE memories ADD COLUMN topics TEXT")
     if "author_model" not in cols:
         await conn.execute("ALTER TABLE memories ADD COLUMN author_model TEXT")
 
+    from server.services.instruction_history import seed_instructions
+
+    await seed_instructions(conn)
     await _ensure_unique_memory_names(conn)
 
     cursor = await conn.execute("PRAGMA table_info(sessions)")

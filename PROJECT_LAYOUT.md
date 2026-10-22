@@ -15,11 +15,11 @@ server/
     hooks.py          - POST /api/hooks/event
     sessions.py       - GET sessions/events, SSE stream (require_auth_sse), editor config,
                         POST /sessions/{id}/archive|unarchive + /sessions/archive-ended
-    config.py         - GET/PUT /api/config/claude-md (empty-body guard); CRUD
+    config.py         - GET/PUT /api/config/claude-md + append-only history, topic catalog; CRUD
                         /api/config/commands (name-validated slash-command blobs)
     skills.py         - Publish/delete and per-harness render endpoints for instructions
                         and behavioural skills
-    memory.py         - CRUD /api/memory; write-flow tripwire; upsert on name
+    memory.py         - CRUD /api/memory + scoped routing snapshot; flow tripwire; upsert on name
                         (globally unique; 409 on cross-scope name without rescope)
     projects.py       - CRUD /api/projects + auto-register + confirm endpoints
     usage.py          - POST /api/usage/messages (INSERT OR IGNORE on message_id),
@@ -30,6 +30,8 @@ server/
                         Unknown model -> cost None + unpriced_messages, never 0
   services/
     session_manager.py - State machine, bounded SSE broadcast, DB writes, archive ops
+    instruction_history.py - Append-only instructions revisions + idempotent migration seed
+    memory_routing.py  - Topic encoding and catalog validation under MEMORY_WRITE_LOCK
     skills.py          - Marker discovery, one-pass slot rendering, variant validation,
                          shared skills-store write lock
     slug.py            - Slug normalization + stoplist for auto-registered projects
@@ -44,7 +46,9 @@ client/
     guard.py               - PreToolUse guard for direct mirror edits and unmarked CLI writes
     sync.py                - Memory sync, keyed on the server row id (stamped into each
                               mirror file's frontmatter). Frontmatter parse, collision-free
-                              filename assignment, tombstones, MEMORY.md regen
+                              filename assignment, tombstones, selective MEMORY.md + topic/catalog indexes
+    memory_routing.py      - Snapshot validation, root/topic/catalog index render,
+                              owned index publication + root budget warning
     commands.py            - `commands pull`: fetch the server command map, write
                               ~/.claude/commands/<name>.md, state-file-scoped prune
     hooks.py               - `hooks pull`: fetch the server hook map, install
@@ -83,7 +87,8 @@ scripts/
                           hydra-cli User-Agent (Cloudflare answers 403 error 1010 without one)
 static/
   index.html, app.js   - Sessions dashboard (/); archive, Recent Events chip filter
-  memory.html, memory.js - Memory dashboard (/memory); browse, delete, copy, move,
+  memory.html, memory.js, memory.css - Memory dashboard (/memory); browse, delete, copy, move,
+                            routing + topic catalog editor,
                             pending-review queue for auto-registered projects
   usage.html, usage.js, usage.css - Usage dashboard (/usage); KPI row, daily cost
                             column chart (inline SVG, no charting lib), ranked tables,
@@ -142,6 +147,8 @@ tests/
 schema.sql            - DDL; sessions.archived_at, memories project_slug FK + UNIQUE(name)
                         (inline; db._migrate installs it on legacy DBs - see Key Patterns),
                         skills + skill_variants,
+                        document_versions (append-only instructions revisions),
+                        memory_topics + memories.topics (routing),
                         config_commands (server-distributed slash commands),
                         config_hooks (server-distributed policy hooks: script + wiring),
                         usage_messages (per-API-message token counts, PK message_id, service_tier)

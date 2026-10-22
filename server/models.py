@@ -69,6 +69,7 @@ class MemoryCreate(BaseModel):
     type: MemoryType
     body: str = ""
     project_slug: str | None = None
+    topics: list[str] | None = None
     author_harness: str | None = None
     author_session_id: str | None = None
     author_model: str | None = None
@@ -84,7 +85,7 @@ class MemoryUpdate(BaseModel):
     """Partial update - only fields PRESENT in the request body are applied
     (model_dump(exclude_unset=True)), so `{"project_slug": null}` unpins a
     memory to global scope while an omitted project_slug leaves scope alone.
-    Existing content fields reject explicit nulls except project_slug. Author
+    Explicit null resets project_slug or topics; other content fields reject it. Author
     fields are always written from their values, including default nulls.
     """
     name: str | None = None
@@ -92,6 +93,7 @@ class MemoryUpdate(BaseModel):
     type: MemoryType | None = None
     body: str | None = None
     project_slug: str | None = None
+    topics: list[str] | None = None
     author_harness: str | None = None
     author_session_id: str | None = None
     author_model: str | None = None
@@ -104,11 +106,28 @@ class MemoryItem(BaseModel):
     type: MemoryType
     body: str
     project_slug: str | None = None
+    topics: list[str] | None = None
     author_harness: str | None = None
     author_session_id: str | None = None
     author_model: str | None = None
     created_at: str
     updated_at: str
+
+
+class MemoryTopic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    title: str = Field(min_length=1, max_length=256)
+    description: str = Field(min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def meaningful_metadata(self) -> MemoryTopic:
+        if self.slug == "catalog":
+            raise ValueError("Topic slug 'catalog' is reserved")
+        if not self.title.strip() or not self.description.strip():
+            raise ValueError("Topic title and description cannot be blank")
+        return self
 
 
 # --- Distributed skills ---

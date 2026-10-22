@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import quote
 
 from hydra_cli import api
+from hydra_cli import memory_routing as routing
 from hydra_cli.paths import is_contained_by, path_shape
 
 GLOBAL_TYPES = {"user", "feedback"}
@@ -151,7 +152,15 @@ def parse_memory_file(path: Path) -> dict[str, Any] | None:
         if ":" not in raw:
             continue
         k, _, v = raw.partition(":")
-        fm[k.strip()] = v.strip()
+        value = v.strip()
+        if k.strip() not in {"topics", "project_slug"} and value.startswith('"'):
+            try:
+                decoded = json.loads(value)
+                if isinstance(decoded, str):
+                    value = decoded
+            except json.JSONDecodeError:
+                pass
+        fm[k.strip()] = value
 
     body = "\n".join(lines[end + 1:]).lstrip("\n")
     if "name" not in fm or "type" not in fm:
@@ -162,7 +171,29 @@ def parse_memory_file(path: Path) -> dict[str, Any] | None:
         mem_id = int(fm["id"])
     except (KeyError, ValueError):
         mem_id = None
+    routing_invalid = False
+    try:
+        topics = json.loads(fm.get("topics", "null"))
+        if topics is not None and (
+            not isinstance(topics, list) or any(not isinstance(t, str) for t in topics)
+        ):
+            routing_invalid = True
+            topics = None
+    except json.JSONDecodeError:
+        topics = None
+        routing_invalid = True
+    try:
+        project_slug = json.loads(fm.get("project_slug", "null"))
+        if project_slug is not None and not isinstance(project_slug, str):
+            raise ValueError("Invalid project scope")
+    except (json.JSONDecodeError, ValueError):
+        project_slug = None
+        routing_invalid = True
     return {
+        "topics": topics,
+        "project_slug": project_slug,
+        "routing_scope_known": "project_slug" in fm,
+        "routing_invalid": routing_invalid,
         "id": mem_id,
         "name": fm["name"],
         "description": fm.get("description", ""),
@@ -179,7 +210,12 @@ def serialize_memory(mem: dict[str, Any]) -> str:
     for k in EMITTED_FM_KEYS:
         if k in PROVENANCE_FM_KEYS and not mem.get(k):
             continue  # a blank id/updated_at parses back as unknown; don't emit one
-        lines.append(f"{k}: {mem.get(k, '')}")
+        value = mem.get(k, '')
+        if isinstance(value, str) and any(char in value for char in ('\n', '\r', '"')):
+            value = json.dumps(value, ensure_ascii=False)
+        lines.append(f"{k}: {value}")
+    lines.append("topics: " + json.dumps(mem.get("topics"), ensure_ascii=False))
+    lines.append("project_slug: " + json.dumps(mem.get("project_slug"), ensure_ascii=False))
     lines.append("---")
     body = mem.get("body") or ""
     if not body.endswith("\n"):
@@ -322,7 +358,8 @@ def regenerate_index(
         suffix = f" - {desc}" if desc else ""
         lines.append(f"- [{mem['name']}]({path.name}){suffix}")
     content = "\n".join(lines) + ("\n" if lines else "")
-    (memory_dir / MEMORY_INDEX).write_text(content, encoding="utf-8")
+    routing.warn_root_budget(content)
+    routing.atomic_write(memory_dir / MEMORY_INDEX, content)
 
 
 # --- Filesystem walk ---
@@ -335,6 +372,8 @@ def walk_local_memories(memory_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
         return []
     out = []
     for p in sorted(memory_dir.iterdir()):
+        if p.is_symlink() and p.suffix == ".md":
+            raise ValueError(f"Refusing mirror symlink: {p}")
         if p.name == MEMORY_INDEX or p.suffix != ".md" or not p.is_file():
             continue
         parsed = parse_memory_file(p)
@@ -346,12 +385,16 @@ def walk_local_memories(memory_dir: Path) -> list[tuple[Path, dict[str, Any]]]:
 # --- Orchestrator ---
 
 
-def run_sync(cwd: str, *, dry_run: bool = False) -> int:
+def _run_legacy_sync(cwd: str, *, dry_run: bool = False) -> int:
     """Pull server memories into cwd's mirror. Return 0 on success."""
-    current_slug = resolve_project_slug(cwd)
+    current_slug = resolve_project_slug(cwd, auto_attach=not dry_run)
     memory_dir = memory_dir_for_cwd(cwd)
 
     server = fetch_server_memories(current_slug)
+    routing.validate_snapshot({
+        "format_version": 1, "topics": [], "corpus_nonempty": bool(server),
+        "memories": [{**mem, "topics": None} for mem in server],
+    }, current_slug)
     server_by_name = {m["name"]: m for m in server}
     filenames = canonical_filenames(server)
     canonical = set(filenames.values())
@@ -371,18 +414,25 @@ def run_sync(cwd: str, *, dry_run: bool = False) -> int:
 
     authoritative = bool(server) or bool(corpus())
     pulled = pruned = 0
-    memory_dir.mkdir(parents=True, exist_ok=True)
+    routing.check_paths(memory_dir, list(canonical), [])
+    for filename in canonical:
+        target = memory_dir / filename
+        if target.exists() and parse_memory_file(target) is None:
+            raise ValueError(f"Refusing unmanaged body collision: {target}")
+    if not dry_run:
+        memory_dir.mkdir(parents=True, exist_ok=True)
     for remote in server:
         target = memory_dir / filenames[remote["id"]]
         if dry_run:
             print(f"  would pull: {remote['name']} -> {target.name}")
         else:
-            target.write_text(serialize_memory(remote), encoding="utf-8")
+            routing.atomic_write(target, serialize_memory(remote))
             print(f"  pulled: {remote['name']}")
         pulled += 1
 
     # A registered cwd and a non-empty corpus make the scoped server view safe
     # to prune against. Empty servers never authorize deletion.
+    obsolete: list[Path] = []
     if current_slug is not None and authoritative:
         for path in sorted(memory_dir.glob("*.md")):
             if path.name == MEMORY_INDEX or path.name in canonical:
@@ -404,21 +454,115 @@ def run_sync(cwd: str, *, dry_run: bool = False) -> int:
             if dry_run:
                 print(f"  would prune (superseded by the server): {path.name}")
             else:
-                path.unlink()
-                print(f"  pruned (superseded by the server): {path.name}")
+                obsolete.append(path)
             pruned += 1
 
-    if not dry_run:
+    if dry_run:
+        entries = [(memory_dir / filenames[mem["id"]], mem) for mem in server]
+        if not authoritative:
+            entries = walk_local_memories(memory_dir)
+        lines = []
+        for path, mem in sorted(entries, key=lambda entry: entry[1]["name"]):
+            desc = mem.get("description", "").strip()
+            suffix = f" - {desc}" if desc else ""
+            lines.append(f"- [{mem['name']}]({path.name}){suffix}")
+        routing.preview("\n".join(lines) + ("\n" if lines else ""), {}, ["Legacy flat index"])
+    else:
         entries = walk_local_memories(memory_dir)
         if authoritative:
             entries = [(path, mem) for path, mem in entries if path.name in canonical]
         regenerate_index(memory_dir, entries)
+        for path in obsolete:
+            path.unlink()
+            print(f"  pruned (superseded by the server): {path.name}")
 
     print(f"\nSummary: {pulled} pulled, {pruned} pruned")
     return 0
 
 
 # --- CLI entry point ---
+
+
+def _run_snapshot_sync(
+    current_slug: str | None, memory_dir: Path, snapshot: dict[str, Any], *, dry_run: bool,
+) -> int:
+    server = snapshot["memories"]
+    topics = snapshot["topics"]
+    authoritative = snapshot["corpus_nonempty"]
+    filenames = canonical_filenames(server)
+    canonical = set(filenames.values())
+    server_names = {mem["name"] for mem in server}
+    local = walk_local_memories(memory_dir)
+    entries = [(memory_dir / filenames[mem["id"]], mem) for mem in server]
+    if not authoritative:
+        entries = local
+        parsed_names = {path.name for path, _ in local}
+        for path in sorted(memory_dir.glob("*.md")):
+            if path.name != MEMORY_INDEX and path.name not in parsed_names and path.is_file():
+                entries.append((path, {
+                    "name": path.stem, "description": "Unparseable local file - preserved",
+                    "topics": None, "project_slug": None, "routing_invalid": True,
+                }))
+        prior = routing.load_manifest(memory_dir)
+        if prior:
+            topics = prior["topics"]
+    root, indexes, diagnostics = routing.render_indexes(
+        entries, topics, current_slug, recovery=not authoritative,
+    )
+    routing.check_paths(memory_dir, list(canonical), list(indexes))
+    for name in canonical:
+        target = memory_dir / name
+        if target.exists() and parse_memory_file(target) is None:
+            raise ValueError(f"Refusing unmanaged body collision: {target}")
+    obsolete = []
+    if current_slug is not None and authoritative:
+        obsolete = [path for path, mem in local if path.name not in canonical
+                    and (mem["id"] is not None or mem["name"] in server_names)]
+    previous = routing.load_manifest(memory_dir)
+    if previous:
+        old_active = set(previous.get("active_files", previous["files"]))
+        retired = old_active - indexes.keys()
+        links = previous.get("index_bodies", {})
+        retained = {body for name in retired for body in links.get(name, [])}
+        obsolete = [path for path in obsolete if path.name not in retained]
+    if dry_run:
+        routing.preview(root, indexes, diagnostics)
+        for path in obsolete:
+            print(f"  would prune (superseded by the server): {path.name}")
+        print(f"\nSummary: {len(server)} would pull, {len(obsolete)} would prune")
+        return 0
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    for mem in server:
+        routing.atomic_write(memory_dir / filenames[mem["id"]], serialize_memory(mem))
+    retained_bodies = routing.publish_indexes(memory_dir, root, indexes, topics)
+    # Old roots and indexes stay usable until publication succeeds.
+    for path in obsolete:
+        if path.name in retained_bodies:
+            continue
+        if path.is_symlink():
+            raise ValueError(f"Refusing obsolete body symlink: {path}")
+        path.unlink()
+    for diagnostic in diagnostics:
+        print(f"  {diagnostic}", file=sys.stderr)
+    print(f"\nSummary: {len(server)} pulled, {len(obsolete)} pruned")
+    return 0
+
+
+def run_sync(cwd: str, *, dry_run: bool = False) -> int:
+    """Validate a coherent scoped snapshot before publishing any local files."""
+    memory_dir = memory_dir_for_cwd(cwd)
+    current_slug = resolve_project_slug(cwd, auto_attach=not dry_run)
+    query = f"?project_slug={quote(current_slug)}" if current_slug else ""
+    status, body = api.get("/api/memory/snapshot" + query)
+    if status in (404, 422):
+        if routing.load_manifest(memory_dir) is not None:
+            raise RuntimeError("Server lacks routing snapshots; keeping last-good memory router")
+        print("Server lacks routing snapshots; using legacy flat index", file=sys.stderr)
+        return _run_legacy_sync(cwd, dry_run=dry_run)
+    if status != 200:
+        raise RuntimeError(f"Failed to fetch memory snapshot: {_api_error(status, body)}")
+    snapshot = routing.validate_snapshot(json.loads(body), current_slug)
+    return _run_snapshot_sync(current_slug, memory_dir, snapshot, dry_run=dry_run)
 
 
 def cmd_sync(args: argparse.Namespace) -> None:

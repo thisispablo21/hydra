@@ -12,6 +12,7 @@ from server.models import (
     ProjectPath,
     ProjectUpdate,
 )
+from server.services.memory_routing import MEMORY_WRITE_LOCK
 from server.services.slug import derive_slug_from_cwd, is_contained_by, path_shape
 
 router = APIRouter(
@@ -168,14 +169,19 @@ async def delete_project(slug: str, force: bool = Query(default=False)):
 
 @router.delete("/{slug}/paths/{instance_id}", status_code=204)
 async def delete_project_path(slug: str, instance_id: str):
-    db = await get_db()
-    cursor = await db.execute(
-        "DELETE FROM project_paths WHERE slug = ? AND instance_id = ?",
-        (slug, instance_id),
-    )
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Path not registered")
-    await db.commit()
+    async with MEMORY_WRITE_LOCK:
+        db = await get_db()
+        try:
+            cursor = await db.execute(
+                "DELETE FROM project_paths WHERE slug = ? AND instance_id = ?",
+                (slug, instance_id),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Path not registered")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 # --- Auto-registration ---
@@ -294,24 +300,34 @@ async def auto_register(
 @router.post("/{slug}/confirm", status_code=204)
 async def confirm_project(slug: str):
     """Clear the project-level auto_registered_at flag (i.e. reviewed)."""
-    db = await get_db()
-    cursor = await db.execute(
-        "UPDATE projects SET auto_registered_at = NULL WHERE slug = ?", (slug,)
-    )
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Project not found")
-    await db.commit()
+    async with MEMORY_WRITE_LOCK:
+        db = await get_db()
+        try:
+            cursor = await db.execute(
+                "UPDATE projects SET auto_registered_at = NULL WHERE slug = ?", (slug,)
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Project not found")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 @router.post("/{slug}/paths/{instance_id}/confirm", status_code=204)
 async def confirm_project_path(slug: str, instance_id: str):
     """Clear the path-level auto_registered_at flag for a specific machine."""
-    db = await get_db()
-    cursor = await db.execute(
-        "UPDATE project_paths SET auto_registered_at = NULL"
-        " WHERE slug = ? AND instance_id = ?",
-        (slug, instance_id),
-    )
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Path not registered")
-    await db.commit()
+    async with MEMORY_WRITE_LOCK:
+        db = await get_db()
+        try:
+            cursor = await db.execute(
+                "UPDATE project_paths SET auto_registered_at = NULL"
+                " WHERE slug = ? AND instance_id = ?",
+                (slug, instance_id),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Path not registered")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise

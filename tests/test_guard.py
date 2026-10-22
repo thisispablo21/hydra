@@ -192,6 +192,9 @@ def test_bash_fallback_allows_reads_and_marked_writes(tmp_path: Path, command: s
         'git commit -m "memory: create hydra"',
         'grep "hydra memory create" notes.md',
         'bash -c "hydra memory create --name x"',
+        "hydra memory create --help",
+        "hydra memory update -h",
+        "python -m hydra_cli memory topics put --help",
     ],
 )
 def test_bash_allows_reads_marked_writes_and_quoted_text(
@@ -344,3 +347,12 @@ def test_bash_denies_a_read_command_redirected_into_the_mirror(tmp_path: Path) -
         payload("Bash", {"command": f"cat /tmp/x > {target}"}), {}, home=tmp_path
     )
     assert reason is not None
+
+
+def test_topic_catalog_write_requires_flow(tmp_path):
+    from hydra_cli.guard import run_guard
+    payload = {'tool_name': 'Bash',
+               'tool_input': {'command': 'hydra memory topics put topics.json'}}
+    assert run_guard(json.dumps(payload), {}, home=tmp_path) is not None
+    payload['tool_input']['command'] += ' --flow sync'
+    assert run_guard(json.dumps(payload), {}, home=tmp_path) is None

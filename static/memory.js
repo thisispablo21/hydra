@@ -6,37 +6,78 @@ let claudeMdDraft = null;  // null when not editing; string when textarea has be
 let claudeMdStatus = "";  // inline saved/error message
 let expandedMemoryIds = new Set();
 let expandedProjectSlugs = new Set();
-let openAction = null;  // { memoryId, kind: "reproject" | "move" | "distribute" } - at most one inline form open
+let openAction = null;  // One inline scope or routing form.
+
+let topics = [];
+let fetchErrors = {};
+let refreshing = false;
+let topicDraft = null;
+let topicStatus = "";
+let routingStatus = "";
+let routingSaving = false;
+let topicSaving = false;
 
 // --- Fetch ---
 
-async function fetchProjects() {
-    const res = await apiFetch(`${API}/projects`);
-    if (!res.ok) return;
-    projects = await res.json();
+async function dashboardFetch(path, opts = {}) {
+    try {
+        return await apiFetch(path, opts);
+    } catch (error) {
+        return new Response(JSON.stringify({ detail: `Network error: ${error.message}` }), {
+            status: 503, headers: { "Content-Type": "application/json" },
+        });
+    }
 }
 
-async function fetchMemories() {
-    const res = await apiFetch(`${API}/memory`);
-    if (!res.ok) return;
-    memories = await res.json();
+async function fetchResource(key, path, read, assign, empty) {
+    try {
+        const res = await dashboardFetch(`${API}${path}`);
+        if (!res.ok) throw new Error(await errorDetail(res));
+        const value = await read(res);
+        assign(value);
+        delete fetchErrors[key];
+    } catch (error) {
+        assign(empty);
+        fetchErrors[key] = error.message;
+    }
 }
 
-async function fetchClaudeMd() {
-    const res = await apiFetch(`${API}/config/claude-md`);
-    if (!res.ok) return;
-    claudeMd = await res.text();
+async function readArray(res) {
+    const value = await res.json();
+    if (!Array.isArray(value)) throw new Error("Invalid response: expected a list.");
+    return value;
 }
 
 async function refresh() {
-    await Promise.all([fetchProjects(), fetchMemories(), fetchClaudeMd()]);
+    if (refreshing || routingSaving || topicSaving) return;
+    topicDraft = null;
+    refreshing = true;
+    claudeMdStatus = "";
+    topicStatus = "";
+    routingStatus = "";
+    const notice = document.getElementById("refresh-status");
+    notice.hidden = false;
+    notice.textContent = "Refreshing…";
+    await Promise.all([
+        fetchResource("Projects", "/projects", readArray, v => projects = v, []),
+        fetchResource("Memories", "/memory", readArray, v => memories = v, []),
+        fetchResource("Instructions", "/config/claude-md", r => r.text(), v => claudeMd = v, ""),
+        fetchResource("Topic catalog", "/config/memory-topics", readArray, v => topics = v, []),
+    ]);
+    refreshing = false;
+    if (openAction && !memories.some(m => m.id === openAction.memoryId)) openAction = null;
     render();
 }
 
 // --- Render ---
 
 function render() {
+    const notice = document.getElementById("refresh-status");
+    const errors = Object.entries(fetchErrors);
+    notice.hidden = errors.length === 0;
+    notice.textContent = errors.map(([name, message]) => `${name} refresh failed: ${message}`).join(" · ");
     renderStats();
+    renderTopics();
     renderPendingReview();
     renderClaudeMd();
     renderGlobals();
@@ -116,14 +157,14 @@ async function confirmAutoRegistered(slug, instanceId, projectFlagged) {
     // Always clear the path-level flag if we have one. If the project itself
     // is flagged, also clear the project-level flag.
     if (instanceId) {
-        const r = await apiFetch(`${API}/projects/${encodeURIComponent(slug)}/paths/${encodeURIComponent(instanceId)}/confirm`, { method: "POST" });
+        const r = await dashboardFetch(`${API}/projects/${encodeURIComponent(slug)}/paths/${encodeURIComponent(instanceId)}/confirm`, { method: "POST" });
         if (!r.ok && r.status !== 404) {
             alert(`Confirm failed: HTTP ${r.status}`);
             return;
         }
     }
     if (projectFlagged) {
-        const r = await apiFetch(`${API}/projects/${encodeURIComponent(slug)}/confirm`, { method: "POST" });
+        const r = await dashboardFetch(`${API}/projects/${encodeURIComponent(slug)}/confirm`, { method: "POST" });
         if (!r.ok) {
             alert(`Confirm (project) failed: HTTP ${r.status}`);
             return;
@@ -137,14 +178,14 @@ async function deletePendingEntry(slug, instanceId, projectFlagged) {
     // delete just the path. Otherwise nuke the whole project.
     if (!projectFlagged && instanceId) {
         if (!confirm(`Detach ${instanceId}'s path from project '${slug}'?`)) return;
-        const r = await apiFetch(`${API}/projects/${encodeURIComponent(slug)}/paths/${encodeURIComponent(instanceId)}`, { method: "DELETE" });
+        const r = await dashboardFetch(`${API}/projects/${encodeURIComponent(slug)}/paths/${encodeURIComponent(instanceId)}`, { method: "DELETE" });
         if (r.status !== 204) {
             alert(`Delete path failed: HTTP ${r.status}`);
             return;
         }
     } else {
         if (!confirm(`Delete project '${slug}' and all its paths?`)) return;
-        const r = await apiFetch(`${API}/projects/${encodeURIComponent(slug)}`, { method: "DELETE" });
+        const r = await dashboardFetch(`${API}/projects/${encodeURIComponent(slug)}`, { method: "DELETE" });
         if (r.status !== 204) {
             alert(`Delete project failed: HTTP ${r.status}`);
             return;
@@ -155,6 +196,10 @@ async function deletePendingEntry(slug, instanceId, projectFlagged) {
 
 function renderClaudeMd() {
     const el = document.getElementById("claude-md-section");
+    if (fetchErrors.Instructions) {
+        el.innerHTML = '<p class="empty-state">Instructions unavailable. Refresh to retry.</p>';
+        return;
+    }
     const caret = claudeMdExpanded ? "▾" : "▸";
     const bytes = claudeMd.length;
     const status = claudeMdStatus
@@ -190,6 +235,12 @@ function renderClaudeMd() {
 
 function renderStats() {
     const el = document.getElementById("memory-stats");
+    if (fetchErrors.Memories || fetchErrors.Projects) {
+        el.textContent = "Counts unavailable until refresh succeeds.";
+        document.getElementById("global-count").textContent = "";
+        document.getElementById("project-count").textContent = "";
+        return;
+    }
     const globalCount = memories.filter((m) => m.project_slug == null).length;
     const projectCount = memories.length - globalCount;
     el.textContent = `${projects.length} project${projects.length !== 1 ? "s" : ""} · ${memories.length} memor${memories.length !== 1 ? "ies" : "y"} (${globalCount} global · ${projectCount} project-scoped)`;
@@ -199,6 +250,10 @@ function renderStats() {
 
 function renderGlobals() {
     const el = document.getElementById("global-memories");
+    if (fetchErrors.Memories) {
+        el.innerHTML = '<p class="empty-state">Memories unavailable. Refresh to retry.</p>';
+        return;
+    }
     const globals = memories.filter((m) => m.project_slug == null);
     globals.sort((a, b) => a.name.localeCompare(b.name));
     if (globals.length === 0) {
@@ -210,6 +265,10 @@ function renderGlobals() {
 
 function renderProjects() {
     const el = document.getElementById("project-list");
+    if (fetchErrors.Projects || fetchErrors.Memories) {
+        el.innerHTML = '<p class="empty-state">Projects or memories unavailable. Refresh to retry.</p>';
+        return;
+    }
     if (projects.length === 0) {
         el.innerHTML = '<p class="empty-state">No projects registered.</p>';
         return;
@@ -253,6 +312,9 @@ function renderMemoryRow(m, isGlobal) {
     } else {
         actions.push(`<span class="memory-action" onclick="startDistribute(${m.id})">Move to projects</span>`);
     }
+    if (!fetchErrors["Topic catalog"] && Object.hasOwn(m, "topics")) {
+        actions.push(`<button class="memory-action-button" onclick="startRouting(${m.id})">Edit routing</button>`);
+    }
     actions.push(`<span class="memory-action memory-action-danger" onclick="deleteMemory(${m.id})">Delete</span>`);
     const form = renderInlineForm(m);
     const authorParts = [m.author_harness, m.author_model, m.author_session_id?.slice(0, 8)]
@@ -272,6 +334,7 @@ function renderMemoryRow(m, isGlobal) {
             </div>
             ${m.description ? `<div class="memory-description">${escHtml(m.description)}</div>` : ""}
             ${author}
+            ${renderRouting(m)}
             ${form}
             ${expanded ? `<pre class="memory-body">${escHtml(m.body || "")}</pre>` : ""}
         </div>
@@ -290,6 +353,7 @@ function memoryTypeBadge(type) {
 
 function renderInlineForm(m) {
     if (!openAction || openAction.memoryId !== m.id) return "";
+    if (openAction.kind === "routing") return renderRoutingForm(m);
     if (openAction.kind === "reproject") {
         const others = projects.filter((p) => p.slug !== m.project_slug);
         if (others.length === 0) {
@@ -343,6 +407,214 @@ function renderInlineForm(m) {
     return "";
 }
 
+// --- Routing metadata ---
+
+function renderRouting(m) {
+    const scope = m.project_slug == null ? "Global" : `Project: ${m.project_slug}`;
+    let routing = "Routing unavailable";
+    if (Object.hasOwn(m, "topics")) {
+        routing = m.topics === null ? "Unclassified" : m.topics.length === 0 ? "Catalog only" : "Topic indexes";
+    }
+    const memberships = (m.topics || []).map(slug => {
+        const topic = topics.find(t => t.slug === slug);
+        return escHtml(topic ? topic.title : `${slug} (unavailable topic)`);
+    }).join(" · ");
+    const placement = m.project_slug != null
+        ? "Project startup index - takes precedence over routing"
+        : m.topics === null ? "Startup index until classified"
+        : Array.isArray(m.topics) && m.topics.length === 0 ? "Full catalog - available on demand"
+        : "Topic indexes and full catalog - available on demand";
+    return `<div class="memory-routing">
+        <span><strong>Scope</strong> ${escHtml(scope)}</span>
+        <span><strong>Routing</strong> ${routing}${memberships ? `: ${memberships}` : ""}</span>
+        <span class="memory-placement">${Object.hasOwn(m, "topics") ? placement : "Refresh with a compatible server to inspect routing."}</span>
+    </div>`;
+}
+
+function renderTopics() {
+    const el = document.getElementById("topic-catalog");
+    document.getElementById("topic-count").textContent = fetchErrors["Topic catalog"] ? "" : `(${topics.length})`;
+    if (fetchErrors["Topic catalog"]) {
+        el.innerHTML = '<p class="empty-state">Topic catalog unavailable. Refresh to retry.</p>';
+    } else {
+        el.innerHTML = topics.length ? topics.map(t => `<div class="topic-definition">
+            <strong>${escHtml(t.title)}</strong> <code>${escHtml(t.slug)}</code>
+            <p>${escHtml(t.description)}</p>
+        </div>`).join("") : '<p class="empty-state">No topics defined. Unclassified memories stay in startup; catalog-only memories remain discoverable.</p>';
+    }
+    renderTopicEditor();
+}
+
+function toggleTopicEditor() {
+    if (topicSaving) return;
+    if (topicDraft !== null) topicDraft = null;
+    else if (!fetchErrors["Topic catalog"]) topicDraft = topics.map(t => ({ ...t }));
+    topicStatus = "";
+    renderTopicEditor();
+}
+
+function renderTopicEditor() {
+    const el = document.getElementById("topic-editor");
+    el.hidden = topicDraft === null;
+    if (topicDraft === null) return;
+    el.innerHTML = `<p class="memory-help">Slugs are stable. To rename, add a topic, reassign its memories, then remove the old topic. Referenced topics cannot be removed.</p>
+        ${topicDraft.map((t, i) => `<div class="topic-editor-row">
+            <label>Slug<input value="${escAttr(t.slug)}" oninput="updateTopicDraft(${i}, 'slug', this.value)" placeholder="topic-slug" ${topicSaving ? "disabled" : ""}></label>
+            <label>Title<input value="${escAttr(t.title)}" oninput="updateTopicDraft(${i}, 'title', this.value)" ${topicSaving ? "disabled" : ""}></label>
+            <label class="topic-description-field">Activity description<textarea rows="2" oninput="updateTopicDraft(${i}, 'description', this.value)" ${topicSaving ? "disabled" : ""}>${escHtml(t.description)}</textarea></label>
+            <button class="memory-action-button memory-action-danger" onclick="removeTopicDraft(${i})" ${topicSaving ? "disabled" : ""}>Remove</button>
+        </div>`).join("")}
+        <div class="topic-editor-actions">
+            <button class="memory-action-button" onclick="addTopicDraft()" ${topicSaving ? "disabled" : ""}>Add topic</button>
+            <button class="memory-action-button" onclick="saveTopics()" ${topicSaving || fetchErrors["Topic catalog"] ? "disabled" : ""}>${topicSaving ? "Saving…" : "Save catalog"}</button>
+            <button class="memory-action-button" onclick="toggleTopicEditor()" ${topicSaving ? "disabled" : ""}>Cancel</button>
+        </div>
+        <p class="memory-notice" role="status">${escHtml(topicStatus)}</p>`;
+}
+
+function updateTopicDraft(index, field, value) {
+    if (topicDraft !== null && !topicSaving) topicDraft[index][field] = value;
+    topicStatus = "";
+    const notice = document.querySelector("#topic-editor .memory-notice");
+    if (notice) notice.textContent = "";
+}
+
+function addTopicDraft() {
+    if (topicDraft === null || topicSaving) return;
+    topicDraft.push({ slug: "", title: "", description: "" });
+    topicStatus = "";
+    renderTopicEditor();
+}
+
+function removeTopicDraft(index) {
+    if (topicDraft === null || topicSaving) return;
+    topicDraft.splice(index, 1);
+    topicStatus = "";
+    renderTopicEditor();
+}
+
+async function saveTopics() {
+    if (topicDraft === null || topicSaving || fetchErrors["Topic catalog"]) return;
+    const submitted = topicDraft.map(t => ({ ...t }));
+    topicSaving = true;
+    topicStatus = "";
+    renderTopicEditor();
+    let published = false;
+    try {
+        const res = await dashboardFetch(`${API}/config/memory-topics`, {
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(submitted),
+        });
+        if (!res.ok) throw new Error(await errorDetail(res));
+        published = true;
+        const readback = await dashboardFetch(`${API}/config/memory-topics`);
+        if (!readback.ok) throw new Error(await errorDetail(readback));
+        const saved = await readArray(readback);
+        const canonical = catalog => JSON.stringify(catalog.map(t => ({
+            slug: t.slug, title: t.title, description: t.description,
+        })).sort((a, b) => a.slug.localeCompare(b.slug)));
+        if (canonical(saved) !== canonical(submitted)) {
+            throw new Error("Returned catalog differs from the submitted catalog.");
+        }
+        topics = saved;
+        topicDraft = saved.map(t => ({ ...t }));
+        topicStatus = "Catalog saved.";
+        routingStatus = "";
+    } catch (error) {
+        if (published) {
+            topics = [];
+            fetchErrors["Topic catalog"] = error.message;
+            topicStatus = `Catalog saved on server, but verification failed: ${error.message} Refresh to inspect the saved catalog before retrying.`;
+        } else {
+            topicStatus = `Save failed: ${error.message}`;
+        }
+    } finally {
+        topicSaving = false;
+        render();
+    }
+}
+
+function startRouting(id) {
+    if (routingSaving) return;
+    const m = memories.find(x => x.id === id);
+    if (!m || !Object.hasOwn(m, "topics") || fetchErrors["Topic catalog"]) return;
+    openAction = {
+        memoryId: id, kind: "routing",
+        mode: m.topics === null ? "unclassified" : m.topics.length ? "topics" : "catalog",
+        topics: [...(m.topics || [])],
+    };
+    routingStatus = "";
+    render();
+}
+
+function setRoutingMode(value) {
+    if (!openAction || routingSaving) return;
+    openAction.mode = value;
+    routingStatus = "";
+    render();
+}
+
+function setRoutingTopic(slug, checked) {
+    if (!openAction || routingSaving) return;
+    openAction.topics = openAction.topics.filter(t => t !== slug);
+    if (checked) openAction.topics.push(slug);
+    routingStatus = "";
+    const notice = document.querySelector(".memory-routing-form .memory-notice");
+    if (notice) notice.textContent = "";
+}
+
+function renderRoutingForm(m) {
+    const mode = openAction.mode;
+    const options = [["unclassified", "Unclassified - startup visible"], ["topics", "Topic indexes - selective reading"], ["catalog", "Catalog only - available on demand"]];
+    return `<div class="memory-inline-form memory-routing-form">
+        <label>Routing<select onchange="setRoutingMode(this.value)" ${routingSaving ? "disabled" : ""}>
+            ${options.map(([value, label]) => `<option value="${value}" ${mode === value ? "selected" : ""}>${label}</option>`).join("")}
+        </select></label>
+        ${m.project_slug != null ? '<p class="memory-help">This project memory stays in its project startup index with any routing choice.</p>' : ""}
+        ${mode === "topics" ? `<div class="routing-topic-options">${topics.length ? topics.map(t => `<label>
+            <input type="checkbox" ${openAction.topics.includes(t.slug) ? "checked" : ""} ${routingSaving ? "disabled" : ""} onchange="setRoutingTopic('${escAttr(t.slug)}', this.checked)">
+            <span><strong>${escHtml(t.title)}</strong><small>${escHtml(t.description)}</small></span>
+        </label>`).join("") : '<p class="memory-help">Add a topic to the catalog before selecting topic routing.</p>'}</div>` : ""}
+        <div class="topic-editor-actions">
+            <button class="memory-action-button" onclick="saveRouting(${m.id})" ${routingSaving || fetchErrors["Topic catalog"] ? "disabled" : ""}>${routingSaving ? "Saving…" : "Save routing"}</button>
+            <button class="memory-action-button" onclick="cancelAction()" ${routingSaving ? "disabled" : ""}>Cancel</button>
+        </div>
+        <p class="memory-notice" role="status">${escHtml(routingStatus)}</p>
+    </div>`;
+}
+
+async function saveRouting(id) {
+    if (!openAction || openAction.memoryId !== id || routingSaving || fetchErrors["Topic catalog"]) return;
+    const next = openAction.mode === "unclassified" ? null : openAction.mode === "catalog" ? [] : openAction.topics;
+    if (Array.isArray(next) && openAction.mode === "topics" && next.length === 0) {
+        routingStatus = "Pick at least one topic, or choose Catalog only.";
+        render();
+        return;
+    }
+    routingSaving = true;
+    routingStatus = "";
+    render();
+    try {
+        const res = await dashboardFetch(`${API}/memory/${id}`, {
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ topics: next }),
+        });
+        if (!res.ok) throw new Error(await errorDetail(res));
+        const saved = await res.json();
+        if (!Object.hasOwn(saved, "topics") || JSON.stringify(saved.topics) !== JSON.stringify(next)) {
+            throw new Error("Server did not confirm routing. Refresh before retrying.");
+        }
+        const index = memories.findIndex(m => m.id === id);
+        if (index >= 0) memories[index] = saved;
+        routingStatus = "Routing saved.";
+    } catch (error) {
+        routingStatus = `Save failed: ${error.message}`;
+    } finally {
+        routingSaving = false;
+        render();
+    }
+}
+
 // --- CLAUDE.md actions ---
 
 function toggleClaudeMd() {
@@ -357,6 +629,8 @@ function toggleClaudeMd() {
 function onClaudeMdInput(value) {
     claudeMdDraft = value;
     claudeMdStatus = "";
+    const status = document.querySelector(".claude-md-status");
+    if (status) status.textContent = "";
     // Re-render only the action buttons' dirty state without rebuilding the
     // textarea (which would lose caret position). The simplest path: toggle
     // a CSS class on the buttons via direct DOM rather than full render().
@@ -373,7 +647,7 @@ async function saveClaudeMd() {
         alert("CLAUDE.md cannot be empty.");
         return;
     }
-    const res = await apiFetch(`${API}/config/claude-md`, {
+    const res = await dashboardFetch(`${API}/config/claude-md`, {
         method: "PUT",
         headers: { "Content-Type": "text/plain" },
         body: claudeMdDraft,
@@ -419,22 +693,27 @@ function toggleProject(slug) {
 // --- Actions ---
 
 function startMoveToProject(id) {
+    if (routingSaving) return;
     openAction = { memoryId: id, kind: "reproject" };
     render();
 }
 
 function startMoveToGlobal(id) {
+    if (routingSaving) return;
     openAction = { memoryId: id, kind: "move" };
     render();
 }
 
 function startDistribute(id) {
+    if (routingSaving) return;
     openAction = { memoryId: id, kind: "distribute" };
     render();
 }
 
 function cancelAction() {
+    if (routingSaving) return;
     openAction = null;
+    routingStatus = "";
     render();
 }
 
@@ -443,7 +722,7 @@ async function deleteMemory(id) {
     if (!m) return;
     const scope = m.project_slug ? `project '${m.project_slug}'` : "global";
     if (!confirm(`Delete memory '${m.name}' (${scope})?`)) return;
-    const res = await apiFetch(`${API}/memory/${id}`, { method: "DELETE" });
+    const res = await dashboardFetch(`${API}/memory/${id}`, { method: "DELETE" });
     if (res.status !== 204) {
         alert(`Delete failed: HTTP ${res.status}`);
         return;
@@ -457,7 +736,7 @@ async function deleteMemory(id) {
 // every mirror file still carrying the OLD id then looks server-deleted - which
 // is exactly how a "move" used to resurrect itself as a duplicate.
 async function rescopeMemory(id, projectSlug, extra = {}) {
-    const res = await apiFetch(`${API}/memory/${id}`, {
+    const res = await dashboardFetch(`${API}/memory/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project_slug: projectSlug, ...extra }),
@@ -520,9 +799,10 @@ async function confirmDistribute(id) {
         description: m.description || "",
         type: m.type,
         body: m.body || "",
+        topics: m.topics,
     };
     const results = await Promise.all(named.map(async ({ target, name }) => {
-        const res = await apiFetch(`${API}/memory`, {
+        const res = await dashboardFetch(`${API}/memory`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ ...payloadBase, name, project_slug: target }),
@@ -541,7 +821,7 @@ async function confirmDistribute(id) {
         await refresh();
         return;
     }
-    const delRes = await apiFetch(`${API}/memory/${id}`, { method: "DELETE" });
+    const delRes = await dashboardFetch(`${API}/memory/${id}`, { method: "DELETE" });
     if (delRes.status !== 204) {
         alert(`Move to projects partially failed: copies created, but DELETE of original returned HTTP ${delRes.status}. Resolve manually.`);
         await refresh();
@@ -570,7 +850,7 @@ async function errorDetail(res) {
 }
 
 function escAttr(s) {
-    return String(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    return escHtml(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 // --- Init ---

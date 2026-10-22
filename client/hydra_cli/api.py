@@ -65,7 +65,7 @@ def post(
 
 
 def put_json(
-    path: str, payload: dict, *, headers: Mapping[str, str] | None = None
+    path: str, payload: dict | list, *, headers: Mapping[str, str] | None = None
 ) -> tuple[int, str]:
     return _request(
         "PUT", path, body=json.dumps(payload).encode("utf-8"), headers=headers

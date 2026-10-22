@@ -30,6 +30,24 @@ def test_opus_5_5_rates_and_reduced_cache_reads():
     assert parts["cache_write_1h"] == pytest.approx(8.0)
 
 
+def test_sonnet_5_5_rates_and_reduced_cache_reads():
+    parts = pricing.cost_components(
+        "claude-sonnet-5-5",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_read_tokens=1_000_000,
+        cache_write_5m_tokens=1_000_000,
+        cache_write_1h_tokens=1_000_000,
+    )
+
+    assert parts is not None
+    assert parts["input"] == pytest.approx(2.0)
+    assert parts["output"] == pytest.approx(10.0)
+    assert parts["cache_read"] == pytest.approx(0.10)
+    assert parts["cache_write_5m"] == pytest.approx(2.5)
+    assert parts["cache_write_1h"] == pytest.approx(4.0)
+
+
 def test_sonnet_5_uses_permanent_rates():
     parts = pricing.cost_components(
         "claude-sonnet-5", input_tokens=1_000_000, output_tokens=1_000_000
@@ -38,6 +56,16 @@ def test_sonnet_5_uses_permanent_rates():
     assert parts is not None
     assert parts["input"] == pytest.approx(2.0)
     assert parts["output"] == pytest.approx(10.0)
+
+
+def test_gpt_6_1_sol_rates_and_fast_tier():
+    base = dict(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
+    std = pricing.cost_components("gpt-6.1-sol", service_tier="default", **base)
+    fast = pricing.cost_components("gpt-6.1-sol", service_tier="priority", **base)
+
+    assert std is not None and fast is not None
+    assert (std["input"], std["cache_read"], std["output"]) == pytest.approx((2.0, 0.1, 10.0))
+    assert (fast["input"], fast["cache_read"], fast["output"]) == pytest.approx((4.0, 0.2, 20.0))
 
 
 def test_sol_cache_reads_use_standard_multiplier():

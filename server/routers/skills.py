@@ -1,12 +1,12 @@
 import json
 import re
-from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from server.auth import require_auth
 from server.db import get_db
 from server.models import SkillUpsert
+from server.services.instruction_history import append_revision, now
 from server.services.skills import SKILLS_WRITE_LOCK, render, validate
 
 router = APIRouter(
@@ -51,7 +51,7 @@ def _decode_instances(body: str | None) -> list[str] | None:
 
 
 @router.put("/{name}")
-async def put_skill(name: str, skill: SkillUpsert):
+async def put_skill(name: str, skill: SkillUpsert, request: Request):
     _check_name(name, "skill")
     if (skill.kind == "instructions") != (name == "instructions"):
         raise HTTPException(
@@ -69,10 +69,10 @@ async def put_skill(name: str, skill: SkillUpsert):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    now = datetime.now(UTC).replace(microsecond=0).isoformat()
     instances = json.dumps(skill.instances) if skill.instances is not None else None
     async with SKILLS_WRITE_LOCK:
         db = await get_db()
+        timestamp = now()
         try:
             await db.execute(
                 """INSERT INTO skills
@@ -87,12 +87,12 @@ async def put_skill(name: str, skill: SkillUpsert):
                     int(skill.enabled),
                     int(skill.implicit_invocation),
                     instances,
-                    now,
+                    timestamp,
                     skill.kind,
                     int(skill.enabled),
                     int(skill.implicit_invocation),
                     instances,
-                    now,
+                    timestamp,
                 ),
             )
             await db.execute("DELETE FROM skill_variants WHERE name = ?", (name,))
@@ -105,11 +105,21 @@ async def put_skill(name: str, skill: SkillUpsert):
                     "INSERT INTO skill_variants (name, variant, body) VALUES (?, ?, ?)",
                     (name, harness, json.dumps(slots)),
                 )
+            if name == "instructions":
+                await append_revision(
+                    db,
+                    skill.common,
+                    skill.variants,
+                    published_at=timestamp,
+                    source="skills-api",
+                    author_instance_id=request.headers.get("X-Instance-Id"),
+                    author_session_id=request.headers.get("X-Session-Id"),
+                )
             await db.commit()
         except Exception:
             await db.rollback()
             raise
-    return {"status": "ok", "updated_at": now}
+    return {"status": "ok", "updated_at": timestamp}
 
 
 @router.delete("/{name}", status_code=204)
@@ -119,11 +129,14 @@ async def delete_skill(name: str):
         raise HTTPException(status_code=422, detail="Instructions cannot be deleted")
     async with SKILLS_WRITE_LOCK:
         db = await get_db()
-        cursor = await db.execute("DELETE FROM skills WHERE name = ?", (name,))
-        if cursor.rowcount == 0:
+        try:
+            cursor = await db.execute("DELETE FROM skills WHERE name = ?", (name,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Skill not found")
+            await db.commit()
+        except Exception:
             await db.rollback()
-            raise HTTPException(status_code=404, detail="Skill not found")
-        await db.commit()
+            raise
 
 
 @router.get("/{harness}")

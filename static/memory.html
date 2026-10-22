@@ -6,6 +6,7 @@
     <title>Hydra · Memory</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/memory.css">
 </head>
 <body>
     <header class="container">
@@ -25,11 +26,22 @@
 
     <main class="container">
         <section id="memory-stats" class="memory-stats">Loading…</section>
+        <p id="refresh-status" class="memory-notice" role="status" hidden></p>
 
         <section id="pending-review-section" hidden>
             <h3 class="section-title">Pending review <span id="pending-count" class="memory-count"></span></h3>
             <p class="event-filter-label">Auto-registered by SessionStart hooks. Confirm to keep, delete to remove.</p>
             <div id="pending-review-list" class="memory-list"></div>
+        </section>
+
+        <section>
+            <div class="memory-section-heading">
+                <h3 class="section-title">Topic catalog <span id="topic-count" class="memory-count"></span></h3>
+                <button class="memory-action-button" onclick="toggleTopicEditor()">Edit catalog</button>
+            </div>
+            <p class="memory-help">Topics guide selective reading. Scope decides which projects receive a memory. Every scoped body remains available through the full catalog.</p>
+            <div id="topic-catalog" class="topic-catalog"></div>
+            <div id="topic-editor" class="topic-editor" hidden></div>
         </section>
 
         <section>

@@ -33,7 +33,7 @@ Hydra is one server that solves both. A server-owned memory store, instructions 
 
 Two loops run continuously:
 
-**Context loop** - `python -m hydra_cli sync` pulls each project's server memories into its local mirror (`~/.claude/projects/<dir>/memory/`). A SessionStart hook runs `python -m hydra_cli sync --pull` before Claude sees the session. The server is the only edit source; use the dashboard or `hydra memory ...`, never local mirror edits. Memories are typed: `user`/`feedback` are global (available everywhere), `project`/`reference` are pinned to the project the cwd maps to. Unregistered cwds auto-register via the server (with a stoplist for `~`, `~/Downloads`, `/tmp`, etc.) and surface in the dashboard's **Pending review** section for confirmation or deletion. The same SessionStart pass pulls server-distributed slash commands into `~/.claude/commands/` and policy hooks into `~/.claude/hooks/`, so a command or hook published once reaches every machine.
+**Context loop** - `python -m hydra_cli sync` pulls each project's server memories into its local mirror (`~/.claude/projects/<dir>/memory/`). A SessionStart hook runs `python -m hydra_cli sync --pull`. The server is the only edit source; use the dashboard or `hydra memory ...`, never local mirror edits. Scope and routing are independent: globals and the current project are mirrored in full, while the generated `MEMORY.md` links to activity indexes and the full catalog and lists unclassified globals plus current-project memories for startup. Opening an index reads descriptions and links, not every body. Unregistered cwds auto-register via the server (with a stoplist for `~`, `~/Downloads`, `/tmp`, etc.) and surface in the dashboard's **Pending review** section for confirmation or deletion. The same SessionStart pass pulls server-distributed slash commands into `~/.claude/commands/` and policy hooks into `~/.claude/hooks/`, so a command or hook published once reaches every machine.
 
 **Observation loop** - every Claude Code tool call fires an HTTP hook to `/api/hooks/event`. The server tracks session state transitions (active / idle / waiting_input / ended) and broadcasts them over Server-Sent Events to any open dashboard.
 
@@ -51,7 +51,7 @@ Shared across both:
 - **The instructions document** - one server-side body, rendered per harness and written to `~/.claude/CLAUDE.md` for Claude Code and `~/.codex/AGENTS.md` for Codex CLI.
 - **Skills** - rendered per harness into `~/.claude/skills/<name>/SKILL.md`, or `~/.agents/skills/<name>/SKILL.md` plus a generated `agents/openai.yaml` for Codex.
 - **The memory guard** - `python -m hydra_cli guard`, wired at `PreToolUse` on both.
-- **Authorship** - every memory write records the harness, session id and model of its last writer.
+- **Authorship** - memories record the harness, session id and model of their last writer. Topics-only updates preserve existing authorship.
 
 The per-harness text is one common markdown body carrying `{{slot}}` markers plus a slot map per harness. The server substitutes in a single pass at render time, and a publish is refused when a harness variant leaves a marker unfilled; a harness with no variant of its own gets the common body byte-identical. No harness convention lives on the server - `implicit_invocation` travels as data and the client applies it.
 
@@ -62,6 +62,24 @@ The per-harness text is one common markdown body carrying `{{slot}}` markers plu
 ### Memory writes
 
 The local mirror is pull-only. Writes go through `hydra memory create|update|delete ... --flow <name>`, where the name is the human-gated flow that approved them; the server answers 428 without the flow marker, and the guard denies both a direct edit under the mirror and any `memory create|update|delete` command with no `--flow` in it. Set `HYDRA_FLOW_HINT` where the hooks run to name your deployment's flow in the denial text.
+
+### Selective memory routing
+
+Each memory's `topics` is `null` (unclassified, startup-visible), `[]` (catalog-only), or a list of catalog slugs (available through topic indexes). Project memories remain in their project's startup index with every routing choice. Scope, body, type and authorship are separate from routing. Omitted routing flags preserve existing metadata; `--unclassified` explicitly resets it.
+
+Define activity topics with `hydra memory topics put topics.json --flow <name>`, where the file is an array of objects with `slug`, `title` and `description`. Referenced topics cannot be removed. Use `--topic SLUG` repeatedly to assign memberships, or `--catalog-only` / `--unclassified`; these modes are mutually exclusive. The dashboard exposes the same catalog and routing controls.
+
+`hydra sync --dry-run` previews the generated router and indexes, routing diagnostics, and line/byte budgets without changing the mirror. Sync retains every scoped body and uses ordinary links for selective reading. Failed refreshes retain the last good local router; upgrade clients before relying on routing, since old clients can regenerate a flat root.
+
+Sync reads a coherent catalog and memory snapshot, publishes topic/catalog indexes before the root, and prunes only owned obsolete indexes. Preview and actual pulls warn about startup-budget overflow; pulls still publish the complete index.
+
+Claude Code's native memory can lag the SessionStart pull by one session. Codex synchronizes before injecting its index. Mirrors are keyed by cwd.
+
+### Instructions history
+
+Both instructions publication endpoints save the document and its revision in one transaction.
+
+Instructions publications retain append-only revisions of the exact common body and harness slot maps. `hydra config history` lists revisions; `hydra config get-claude-md --at <timezone-qualified-ISO-timestamp> [--harness NAME]` reads the latest known published state at that time. Without `--harness`, it returns the common body. The migration seed records when the current state was captured, not its earlier publication date; history does not describe a running session's loaded context.
 
 ### Skills
 
@@ -126,15 +144,23 @@ Invoke as `python -m hydra_cli ...`. A `hydra` console shim is also installed by
 
 ```
 python -m hydra_cli sync [--pull] [--dry-run] [--cwd PATH]
-                      # Pull server memories into the local mirror. --pull is
-                      # accepted for compatibility and has no effect.
+                      # Pull complete scoped bodies and selective indexes.
+                      # --dry-run previews routing and budgets without writes.
+                      # --pull is accepted for compatibility.
 python -m hydra_cli memory list [--all|--project SLUG|--global] [--json]
-                      # Defaults to this project + globals, one index line each.
+                      [--topic SLUG|--catalog-only|--unclassified]
+                      # Defaults to this project + globals, one index line each:
+                      # `id type scope [routing] - name - desc`, routing being
+                      # topic slugs, `catalog` or `unclassified`.
                       # --json returns full rows with bodies.
 python -m hydra_cli memory get ID
 python -m hydra_cli memory create ... --flow <name>
 python -m hydra_cli memory update ID ... --flow <name>
 python -m hydra_cli memory delete ID --flow <name>
+python -m hydra_cli memory topics list
+python -m hydra_cli memory topics put FILE --flow <name>
+                      # create/update accept --topic SLUG (repeatable),
+                      # --catalog-only, or --unclassified.
                       # Memory writes require a human-gated flow name.
 python -m hydra_cli project list | get SLUG | create --slug --path | update SLUG | delete
 python -m hydra_cli project prune [--apply]
@@ -143,7 +169,9 @@ python -m hydra_cli project prune [--apply]
                       # a rejection rule, and which hold no pinned memories.
                       # Dry-run unless --apply. Slug twins are reported as merge
                       # candidates, never merged.
-python -m hydra_cli config get-claude-md | put-claude-md FILE
+python -m hydra_cli config get-claude-md [--at TIMESTAMP] [--harness NAME]
+python -m hydra_cli config put-claude-md FILE
+python -m hydra_cli config history
 python -m hydra_cli commands pull | put NAME FILE | get NAME | list | delete NAME
                       # Slash commands. `pull` is the SessionStart hook; the
                       # rest manage what the server distributes.
@@ -177,8 +205,9 @@ Three pages, all behind the bearer token:
 - **`/memory` - Memory dashboard.** Browse the cross-machine memory store.
   - Global memories (`user` / `feedback`) listed separately from project-scoped memories, grouped per project with expandable rows.
   - Click a memory name to expand its body inline.
-  - Per memory: **Delete**, **Move to project**, **Move to global** (pick new `user` / `feedback` type), and **Move to projects** to split a global memory across several (each copy is named `<name>-<slug>`, since names are globally unique). Re-scoping happens in place, so a memory keeps its id and its mirror files stay valid. Read-only bodies - edits still go through `python -m hydra_cli sync`.
+  - Per memory: **Delete**, **Move to project**, **Move to global** (pick new `user` / `feedback` type), and **Move to projects** to split a global memory across several (each copy is named `<name>-<slug>`, since names are globally unique). Re-scoping happens in place, so a memory keeps its id and its mirror files stay valid. Bodies are read-only here; body edits use `hydra memory update ... --flow <name>`.
   - Stats header: project count and memory count, split global vs project-scoped.
+  - **Edit routing** distinguishes Unclassified, Topic indexes and Catalog only from Global / Project scope. Project rows show their effective Project startup index placement. Moves and project copies retain routing. The topic catalog editor manages stable slugs, titles and activity descriptions. Refresh and save failures appear explicitly.
 - **`/usage` - Token accounting.** Cost and tokens across machines and harnesses, by day / project / model / subagent.
   - Range chips (7d / 30d / 90d / all); machine and harness filters appear once a second value reports. Unknown models are counted but left unpriced, never shown as $0.
 
@@ -198,6 +227,7 @@ Session cards on the dashboard are grouped by status and updated live via SSE.
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests/ -v
+node tests/memory_dashboard.mjs
 ruff check server/ tests/ client/
 pyright server/ tests/ client/
 ```

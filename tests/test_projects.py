@@ -477,3 +477,36 @@ async def test_manual_create_has_no_auto_flag(client: AsyncClient):
     proj = (await client.get("/api/projects/hydra")).json()
     assert proj["auto_registered_at"] is None
     assert proj["paths"][0]["auto_registered_at"] is None
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("delete", "/api/projects/missing/paths/missing"),
+        ("post", "/api/projects/missing/confirm"),
+        ("post", "/api/projects/missing/paths/missing/confirm"),
+        ("delete", "/api/config/commands/missing"),
+        ("delete", "/api/config/hooks/missing"),
+        ("delete", "/api/config/skills/missing"),
+    ],
+)
+@pytest.mark.parametrize("next_write", ["memory", "catalog", "instructions"])
+async def test_mutation_404_ends_transaction_before_next_write(
+    client: AsyncClient, method: str, path: str, next_write: str
+):
+    import asyncio
+
+    from server.db import get_db
+
+    response = await client.request(method, path)
+    assert response.status_code == 404
+    db = await get_db()
+    assert not db.in_transaction
+    if next_write == "memory":
+        operation = client.post("/api/memory", json={"name": "after404", "type": "user"})
+    elif next_write == "catalog":
+        operation = client.put("/api/config/memory-topics", json=[])
+    else:
+        operation = client.put("/api/config/claude-md", content="After 404\n")
+    assert (await asyncio.wait_for(operation, timeout=3)).status_code == 200
+    assert not db.in_transaction

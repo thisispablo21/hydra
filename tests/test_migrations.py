@@ -342,3 +342,22 @@ async def test_migration_backfills_hook_wiring_from_legacy_columns(tmp_path: Pat
     )))
     assert again["wiring"] == row["wiring"]
     await conn.close()
+
+
+async def test_migration_topics_are_null_and_remain_authored(tmp_path: Path):
+    conn = await _legacy_db(tmp_path)
+    memory_id = await _insert(conn, "legacy", slug=None, mem_type="user", body="literal\n")
+    await conn.commit()
+    await db_module._migrate(conn)
+    await conn.commit()
+    row = next(iter(await conn.execute_fetchall(
+        "SELECT id, name, body, topics FROM memories WHERE id = ?", (memory_id,)
+    )))
+    assert tuple(row) == (memory_id, "legacy", "literal\n", None)
+    await conn.execute("UPDATE memories SET topics = '[]' WHERE id = ?", (memory_id,))
+    await db_module._migrate(conn)
+    row = next(iter(await conn.execute_fetchall(
+        "SELECT topics FROM memories WHERE id = ?", (memory_id,)
+    )))
+    assert row[0] == "[]"
+    await conn.close()
