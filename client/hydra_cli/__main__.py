@@ -20,6 +20,7 @@ from hydra_cli.codex import (
     run_setup as run_codex_setup,
 )
 from hydra_cli.commands import run_pull as run_commands_pull
+from hydra_cli.event import cmd_event
 from hydra_cli.guard import main as run_guard_main
 from hydra_cli.hooks import run_pull as run_hooks_pull
 from hydra_cli.memory_routing import validate_snapshot, validate_topics
@@ -1070,6 +1071,9 @@ def build_parser() -> argparse.ArgumentParser:
     # --- doctor (instance health + stats + anomaly checks) ---
     sub.add_parser("doctor", help="diagnose this Hydra instance (health, stats, anomalies)")
 
+    # --- event (session-event hooks; reads payload from stdin) ---
+    sub.add_parser("event", help="hook: POST the session event on stdin to Hydra")
+
     # --- capture-remote-url (Stop hook entry; reads payload from stdin) ---
     sub.add_parser(
         "capture-remote-url",
@@ -1133,6 +1137,7 @@ DISPATCH = {
     ("codex-setup", None): cmd_codex_setup,
     ("guard", None): cmd_guard,
     ("doctor", None): cmd_doctor,
+    ("event", None): cmd_event,
     ("capture-remote-url", None): cmd_capture_remote_url,
     ("apply-settings", None): cmd_apply_settings,
 }

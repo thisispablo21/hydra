@@ -25,14 +25,9 @@
             "timeout": 5
           },
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }
@@ -46,14 +41,9 @@
             "timeout": 5
           },
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }
@@ -62,14 +52,9 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }
@@ -79,14 +64,9 @@
         "matcher": "Write|Edit|Bash",
         "hooks": [
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }
@@ -117,14 +97,9 @@
             "timeout": 5
           },
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }
@@ -133,14 +108,9 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }
@@ -149,14 +119,9 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }
@@ -166,14 +131,9 @@
         "matcher": "idle_prompt",
         "hooks": [
           {
-            "type": "http",
-            "url": "__HYDRA_URL__/api/hooks/event",
-            "timeout": 5,
-            "headers": {
-              "Authorization": "Bearer $HYDRA_AUTH_TOKEN",
-              "X-Instance-Id": "$HYDRA_INSTANCE_ID"
-            },
-            "allowedEnvVars": ["HYDRA_AUTH_TOKEN", "HYDRA_INSTANCE_ID"]
+            "type": "command",
+            "command": "python -m hydra_cli event",
+            "timeout": 5
           }
         ]
       }

@@ -38,7 +38,7 @@ server/
 client/
   hydra_cli/
     __main__.py            - CLI dispatch (memory, project, config, commands, hooks, skills, guard,
-                              sync, usage, doctor, Codex hooks, capture-remote-url,
+                              sync, usage, doctor, Codex hooks, event, capture-remote-url,
                               apply-settings)
     api.py                 - Stdlib urllib + bearer token + custom headers
     author.py              - Last-writer authorship for `memory create|update`: harness + session
@@ -67,9 +67,12 @@ client/
     usage_codex.py         - Codex rollout parser + sweep/reconcile, shared atomic offset
                               state, root-session batching and server capability handshake
     remote.py              - Stop-hook entry: scans transcript for the bridge record, PUTs URL
+    event.py               - session-event hook entry: POSTs the stdin payload to
+                              /api/hooks/event (a command hook: HTTP hooks refuse tailnet IPs)
     apply_settings.py      - 4-way merge for ~/.claude/settings.json (hydra hooks →
                               server policy hooks → template defaults → user overrides)
-  settings.json            - Hydra hooks template (__HYDRA_URL__ / __HYDRA_REPO_PATH__ placeholders)
+  settings.json            - Hydra hooks template (__HYDRA_REPO_PATH__ placeholder; the URL
+                              comes from HYDRA_URL at run time since 2026-10-31)
   settings.user.template.json - User-pref defaults (effortLevel, attribution, statusLine, …);
                                 scaffolded to ~/.claude/settings.user.json on first run
   hydra_statusline.sh      - Status-line launcher; installed to ~/.claude/hydra_statusline.sh
@@ -131,6 +134,8 @@ tests/
                         disconnect vs drift, the three-way PUT split, + a corpus canary
                         whose denominator is computed independently of the parser
   fixtures/           - REDACTED real transcript lines (synthetic ids) seeding the above
+  test_event.py       - `event`: posts stdin, silent stdout, exit 1 on failure (never 2),
+                        and the shipped template reports every event by command, never HTTP
   test_session_archive.py - Archive endpoints + auto-unarchive on new activity
   test_session_cwd.py - Hook + CLI cwd pinning: CLAUDE_PROJECT_DIR beats a drifted
                         $PWD, fallback retained (parses the shipped hook commands)

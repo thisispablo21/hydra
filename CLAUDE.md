@@ -1,6 +1,6 @@
 # Hydra - Claude Code Control Plane
 
-One server that holds memories, CLAUDE.md, and the project registry, and watches every live session. Clients sync context at SessionStart/Stop; every tool call is reported over HTTP hooks. Same bearer token, same server, two loops that don't depend on each other.
+One server that holds memories, CLAUDE.md, and the project registry, and watches every live session. Clients sync context at SessionStart/Stop; every tool call is reported by a command hook over HTTP. Same bearer token, same server, two loops that don't depend on each other.
 
 ## Tech Stack
 
