@@ -1160,6 +1160,7 @@ def main() -> None:
     leaf_groups = {
         "sync",
         "doctor",
+        "event",
         "capture-remote-url",
         "apply-settings",
         "codex-session-start",

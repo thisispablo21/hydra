@@ -47,6 +47,20 @@ def test_a_failed_post_is_a_non_blocking_error(monkeypatch, capsys, post):
     assert out.out == "" and out.err.startswith("hydra event: ")
 
 
+def test_the_hook_command_line_reaches_it(monkeypatch, capsys):
+    """`python -m hydra_cli event` as the template runs it, through main()'s dispatch
+    (2026-10-31: a missing leaf_groups entry printed the help and exited 1)."""
+    from hydra_cli.__main__ import main
+
+    monkeypatch.setattr("sys.argv", ["hydra", "event"])
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(json.dumps(PAYLOAD).encode())))
+    post = mock.Mock(return_value=(200, "{}"))
+    with mock.patch.object(event.api, "post", post):
+        main()
+    post.assert_called_once_with("/api/hooks/event", PAYLOAD)
+    assert capsys.readouterr().out == ""
+
+
 def test_no_payload_sends_nothing(monkeypatch):
     post = mock.Mock()
     assert _run(monkeypatch, "", post) == 0
