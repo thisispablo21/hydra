@@ -9,6 +9,9 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -61,6 +64,20 @@ def test_the_hook_command_line_reaches_it(monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the wiring runs in sh")
+@pytest.mark.parametrize(("cli_exit", "hook_exit"), [(0, 0), (1, 1), (2, 1)])
+def test_the_wiring_never_exits_2(tmp_path, cli_exit, hook_exit):
+    """2026-11-11: a pre-`event` checkout in the live clone made argparse exit 2,
+    Claude Code's blocking code; the wiring turns every failure into 1."""
+    fake = tmp_path / "python"
+    fake.write_text(f"#!/bin/sh\nexit {cli_exit}\n")
+    fake.chmod(0o755)
+    hooks = json.loads(TEMPLATE.read_text(encoding="utf-8"))["hooks"]
+    command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+    env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+    assert subprocess.run(["sh", "-c", command], env=env).returncode == hook_exit
+
+
 def test_no_payload_sends_nothing(monkeypatch):
     post = mock.Mock()
     assert _run(monkeypatch, "", post) == 0
@@ -73,7 +90,7 @@ def test_template_reports_events_by_command_never_http():
     assert all(h["type"] != "http" for h in entries)
     reporting = {
         name for name, groups in hooks.items()
-        if any(h.get("command") == "python -m hydra_cli event"
+        if any(h.get("command") == "python -m hydra_cli event || exit 1"
                for g in groups for h in g["hooks"])
     }
     assert reporting == {

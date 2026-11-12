@@ -124,7 +124,7 @@ only its variant on SessionStart. After a new or changed Codex hook lands, run
 - Session idle/waiting states
 - Subagent lifecycle
 
-Hooks are non-blocking (5s timeout; a failed POST shows a non-blocking hook error). If the Hydra server is unreachable, Claude Code continues normally.
+Hooks are non-blocking (5s timeout; a failed POST shows a non-blocking hook error). If the Hydra server is unreachable, Claude Code continues normally. The wiring ends in `|| exit 1`, so any failure, the CLI's own included, stays non-blocking: on 2026-11-11 another session checked out a pre-`event` branch in the live clone for 28 seconds, the editable install served that CLI, and argparse's usage error exited 2, which Claude Code treats as blocking (on `UserPromptSubmit` it drops the prompt, on `Stop` it keeps Claude going). Work on another branch goes into a `git worktree`, never a checkout in the clone every hook on the machine imports from.
 
 ## Auto-sync
 
