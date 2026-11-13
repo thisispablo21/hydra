@@ -166,3 +166,21 @@ def test_cli_falls_back_to_getcwd(
     monkeypatch.chdir(drifted)
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     assert _run_cmd_sync(monkeypatch) == str(drifted)
+
+
+def test_cli_refuses_a_cwd_that_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A path decoded from a transcript folder name (Claude Code writes `_` as
+    `-`) auto-registered card-detection next to card_detection (2026-11-01)."""
+    called: list[str] = []
+    monkeypatch.setattr(
+        "hydra_cli.sync.run_sync", lambda cwd, **_: called.append(cwd) or 0
+    )
+    args = argparse.Namespace(
+        cwd=str(tmp_path / "card-detection"), pull=True, dry_run=False
+    )
+    with pytest.raises(SystemExit) as exc:
+        cmd_sync(args)
+    assert exc.value.code == 1
+    assert called == []

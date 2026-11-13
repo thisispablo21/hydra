@@ -569,5 +569,11 @@ def cmd_sync(args: argparse.Namespace) -> None:
     # CLAUDE_PROJECT_DIR is the session's launch dir and stays put; $PWD/getcwd
     # follow the model's `cd` and would auto-register subdirs as projects.
     cwd = args.cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # Auto-register mints a project from any path it is sent: a cwd decoded from
+    # a transcript folder name (`_` written as `-`) minted phantoms (2026-11-01).
+    if not os.path.isdir(cwd):
+        print(f"Not a directory: {cwd}; sync would register it as a project",
+              file=sys.stderr)
+        sys.exit(1)
     exit_code = run_sync(cwd, dry_run=args.dry_run)
     sys.exit(exit_code)
