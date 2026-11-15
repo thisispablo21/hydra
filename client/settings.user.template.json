@@ -13,7 +13,8 @@
     "defaultMode": "auto"
   },
   "env": {
-    "HYDRA_FLOW_HINT": "Flows for this deployment: /wrap-session (--flow wrap-session) or Flo's explicit approval in chat (--flow user-approved-in-session). Use the console form 'hydra memory ...' as a bare command, body from a scratchpad file."
+    "HYDRA_FLOW_HINT": "Flows for this deployment: /wrap-session (--flow wrap-session) or Flo's explicit approval in chat (--flow user-approved-in-session). Use the console form 'hydra memory ...' as a bare command, body from a scratchpad file.",
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1"
   },
   "cleanupPeriodDays": 999,
   "remoteControlAtStartup": true,
