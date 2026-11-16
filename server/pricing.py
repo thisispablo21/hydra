@@ -35,6 +35,8 @@ class Rate(NamedTuple):
 # row that does cross would under-report, not silently zero. The other tier
 # OpenAI charges on, service tier, IS reachable - see TIER_MULT below.
 RATES: dict[str, Rate] = {
+    "claude-fable-5-2": Rate(8.0, 40.0, 0.025),
+    "claude-mythos-5-2": Rate(8.0, 40.0, 0.025),
     "claude-fable-5-1": Rate(10.0, 50.0, 0.025),
     "claude-mythos-5-1": Rate(10.0, 50.0, 0.025),
     "claude-fable-5": Rate(10.0, 50.0),
