@@ -135,3 +135,4 @@ cd ~/projects/hydra && git pull --ff-only && bash client/setup.sh
 ```
 
 This keeps all machines in sync without manual intervention. If the pull fails (no network, merge conflict), it fails silently.
+The agent-config repo (`~/projects/agent-config`: global scripts, research-skill files) is not pulled at session start yet: Sisyphus #459.
